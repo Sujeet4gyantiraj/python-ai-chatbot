@@ -311,27 +311,19 @@ async def generate_and_stream_ai_response(
         # -----------------------
         knowledge_base = ""
        
+
         if not ai_node_data or not ai_node_data.get("disableKnowledgeBase"):
             query_embedding = await embed_query(last_user_message)
-            
+            print("[RAG DEBUG] Pinecone query embedding:", query_embedding[:10], "... (truncated)")
             pinecone_response = pinecone_index.query(
                 vector=query_embedding,
                 top_k=5,
                 include_metadata=True,
                 namespace=session.botId
-                # filter={
-                #     "bot_id": session.botId
-                # }
             )
-
-            # if pinecone_response and pinecone_response.get("matches"):
-            #     knowledge_base = "\n\n---\n\n".join(
-            #         match["metadata"]["content"]
-            #         for match in pinecone_response["matches"]
-            #         if match.get("metadata") and match["metadata"].get("content")
-            #     )
-
-            SIMILARITY_THRESHOLD = 0.75
+            print("[RAG DEBUG] Pinecone response:", pinecone_response)
+            breakpoint()
+            SIMILARITY_THRESHOLD = 0.65
 
             if pinecone_response and pinecone_response.get("matches"):
                 knowledge_base = "\n\n---\n\n".join(
@@ -343,6 +335,7 @@ async def generate_and_stream_ai_response(
                         and match.get("score", 0) >= SIMILARITY_THRESHOLD
                     )
                 )
+            print("[RAG DEBUG] Knowledge base for prompt:", knowledge_base)
 
         # -----------------------
         # Prompt + Chat

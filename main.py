@@ -246,7 +246,7 @@ import re
 from db import get_db
 from models import Bot, KnowledgeSource
 from pinecone_client import index
-from utils.chunking import extract_chunks
+from utils.chunking import extract_chunks, extract_chunks_from_text
 
 from genai_service import (
     generate_and_stream_ai_response,
@@ -275,18 +275,15 @@ import docx
 import csv
 from fastapi import UploadFile, HTTPException
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".csv", ".txt"}
-async def read_upload_file(file: UploadFile) -> str:
-    ext = os.path.splitext(file.filename)[1].lower()
 
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".csv", ".txt"}
+def read_upload_file(filename: str, content: bytes) -> str:
+    ext = os.path.splitext(filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported file type: {ext}"
         )
-
-    content = await file.read()  # 🔥 READ ONCE, AT START
-
     if ext == ".pdf":
         text = []
         with pdfplumber.open(io.BytesIO(content)) as pdf:
@@ -295,20 +292,16 @@ async def read_upload_file(file: UploadFile) -> str:
                 if page_text:
                     text.append(page_text)
         return "\n".join(text)
-
     elif ext in {".docx", ".doc"}:
         doc = docx.Document(io.BytesIO(content))
         return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-
     elif ext == ".csv":
         decoded = content.decode("utf-8", errors="ignore")
         reader = csv.reader(decoded.splitlines())
         rows = [" ".join(row) for row in reader]
         return "\n".join(rows)
-
     elif ext == ".txt":
         return content.decode("utf-8", errors="ignore")
-
     raise HTTPException(status_code=400, detail="File reading failed")
 
 
@@ -362,10 +355,10 @@ async def upload_knowledge(
     total_size = 0
 
     try:
+
         for file in files:
             content = await file.read()
             total_size += len(content)
-            breakpoint()
             if total_size > MAX_TOTAL_SIZE:
                 raise HTTPException(status_code=400, detail="Upload exceeds 10MB")
 
@@ -374,9 +367,13 @@ async def upload_knowledge(
 
             async with aiofiles.open(temp_path, "wb") as f:
                 await f.write(content)
-            text = await read_upload_file(file)
-            chunks = await extract_chunks(temp_path)
-            print("Extracted chunksssssssssssssssssssssssssssssssssssssssssssssssssssssssss:", len(chunks))
+
+            # Read file as text according to type
+            text = read_upload_file(file.filename, content)
+
+            # Chunk the extracted text, not the file
+            chunks = extract_chunks_from_text(text)
+            print("Extracted chunks:", len(chunks))
             source = KnowledgeSource(
                 id=cuid.cuid(),
                 fileName=file.filename,
@@ -391,7 +388,9 @@ async def upload_knowledge(
             chunks = [c.strip() for c in chunks if c.strip()]
             chunks = [c[:1000] for c in chunks if len(c) > 50]
             embeddings = await embed_content_batch(chunks)
-            print("Embeddings receiveddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd:", len(embeddings))
+            for chunk, emb in zip(chunks, embeddings):
+                print("Chunk:", chunk[:60], "Embedding length:", len(emb))
+            print("Embeddings received:", len(embeddings))
             vectors = [
                 {
                     "id": str(uuid.uuid4()),
@@ -403,7 +402,6 @@ async def upload_knowledge(
                     },
                 }
                 for chunk, emb in zip(chunks, embeddings)
-                
             ]
 
             index.upsert(
