@@ -1,0 +1,32 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    container_name: chatbot-fastapi
+    environment:
+      - DATABASE_URL=postgresql://adarsh1927:Adarsh%40123@postgres:5432/rhysleydb
+      - HUGGINGFACEHUB_API_TOKEN=${HUGGINGFACEHUB_API_TOKEN}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+    networks:
+      - rhysley-bot_default
+  postgres:
+    image: postgres:15
+    container_name: chatbot-postgres
+    environment:
+      - POSTGRES_USER=adarsh1927
+      - POSTGRES_PASSWORD=Adarsh@123
+      - POSTGRES_DB=rhysleydb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - rhysley-bot_default
+volumes:
+  pgdata:
+networks:
+  rhysley-bot_default:
+    external: true
