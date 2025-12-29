@@ -20,6 +20,7 @@ pinecone
 langchain
 langchain-huggingface
 langchain-text-splitters
+langchain-core
 
 
 # File handling

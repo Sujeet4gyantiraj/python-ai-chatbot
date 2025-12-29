@@ -11,6 +11,8 @@ import asyncio
 import os
 from dotenv import load_dotenv
 
+from utils.prompt_builder import build_augmented_system_instruction
+
 
 load_dotenv()
 
@@ -95,7 +97,7 @@ async def generate_chat_response(
             res = await client.post(
                 f"{GENAI_API_BASE_URL}/generate/",
                 json={
-                    "prompt": prompt,
+                    "prompt": str(prompt),
                     "max_tokens": max_tokens,
                     "temperature": temperature,
                     "top_p": top_p,
@@ -174,60 +176,60 @@ async def generate_chat_response(
 #     }
 
 
-def build_augmented_system_instruction(
-    knowledge_base: str,
-    custom_instruction: Optional[str],
-) -> Dict[str, str]:
-    # --- Non-negotiable rules (EXACT parity with Node.js) ---
-    non_negotiable_rule = """
-You are a customer support assistant. Your primary directive is to answer user questions based *only* on the provided CONTEXT. Follow these rules strictly:
-1. First, check if the user's intent matches one of the ACTION TRIGGERS below. If it does, your ONLY response MUST be the corresponding action tag (e.g., '[ACTION:REQUEST_AGENT]'). Do NOT add any other text.
-2. If no action is triggered, analyze the user's question. You MUST answer it using ONLY the information from the CONTEXT section. Do not use any external knowledge.
-3. If the CONTEXT does not contain the information needed to answer the question, you MUST respond with the following exact phrase and nothing else:
-   "We’d love to assist you further! Kindly share your contact details and one of our customer care representatives will contact you shortly."
-4. If the user provides a simple greeting, engages in small talk, or expresses gratitude (e.g., 'hi', 'how are you', 'thanks'), respond naturally and courteously. Do not use the CONTEXT for these interactions.
-5. Never invent answers. If you are not 100% sure the answer is in the CONTEXT, use the fallback phrase from rule #3.
-"""
+# def build_augmented_system_instruction(
+#     knowledge_base: str,
+#     custom_instruction: Optional[str],
+# ) -> Dict[str, str]:
+#     # --- Non-negotiable rules (EXACT parity with Node.js) ---
+#     non_negotiable_rule = """
+# You are a customer support assistant. Your primary directive is to answer user questions based *only* on the provided CONTEXT. Follow these rules strictly:
+# 1. First, check if the user's intent matches one of the ACTION TRIGGERS below. If it does, your ONLY response MUST be the corresponding action tag (e.g., '[ACTION:REQUEST_AGENT]'). Do NOT add any other text.
+# 2. If no action is triggered, analyze the user's question. You MUST answer it using ONLY the information from the CONTEXT section. Do not use any external knowledge.
+# 3. If the CONTEXT does not contain the information needed to answer the question, you MUST respond with the following exact phrase and nothing else:
+#    "We’d love to assist you further! Kindly share your contact details and one of our customer care representatives will contact you shortly."
+# 4. If the user provides a simple greeting, engages in small talk, or expresses gratitude (e.g., 'hi', 'how are you', 'thanks'), respond naturally and courteously. Do not use the CONTEXT for these interactions.
+# 5. Never invent answers. If you are not 100% sure the answer is in the CONTEXT, use the fallback phrase from rule #3.
+# """
 
-    # --- Personality logic (same truth table as Node.js) ---
-    default_personality = "You are a helpful and professional customer support assistant."
-    personality = (
-        custom_instruction
-        if custom_instruction is not None
-        else default_personality
-    )
+#     # --- Personality logic (same truth table as Node.js) ---
+#     default_personality = "You are a helpful and professional customer support assistant."
+#     personality = (
+#         custom_instruction
+#         if custom_instruction is not None
+#         else default_personality
+#     )
 
-    # --- Action triggers (EXACT copy) ---
-    action_instruction = """
-// --- ACTION TRIGGER ---
-If the user's intent clearly matches one of the following, respond ONLY with the tag.
+#     # --- Action triggers (EXACT copy) ---
+#     action_instruction = """
+# // --- ACTION TRIGGER ---
+# If the user's intent clearly matches one of the following, respond ONLY with the tag.
 
-1. **[ACTION:REQUEST_AGENT]**: The user is expressing frustration, is asking for help that you determine is not available in the CONTEXT, or is explicitly asking to speak to a human, a person, an agent, or wants live support.
-   - User says: "I need to talk to a real person." -> Your response: [ACTION:REQUEST_AGENT]
-   - User says: "This is frustrating, connect me to an agent." -> Your response: [ACTION:REQUEST_AGENT]
+# 1. **[ACTION:REQUEST_AGENT]**: The user is expressing frustration, is asking for help that you determine is not available in the CONTEXT, or is explicitly asking to speak to a human, a person, an agent, or wants live support.
+#    - User says: "I need to talk to a real person." -> Your response: [ACTION:REQUEST_AGENT]
+#    - User says: "This is frustrating, connect me to an agent." -> Your response: [ACTION:REQUEST_AGENT]
 
-2. **[ACTION:SHOW_SCHEDULER]**: The user has a clear intent to book a meeting, schedule a demo, set up a call, or ask for a callback. Do NOT trigger this for general pricing or info questions.
-   - User says: "This sounds great, can I book a demo?" -> Your response: [ACTION:SHOW_SCHEDULER]
-   - User says: "Can you have someone call me back?" -> Your response: [ACTION:SHOW_SCHEDULER]
+# 2. **[ACTION:SHOW_SCHEDULER]**: The user has a clear intent to book a meeting, schedule a demo, set up a call, or ask for a callback. Do NOT trigger this for general pricing or info questions.
+#    - User says: "This sounds great, can I book a demo?" -> Your response: [ACTION:SHOW_SCHEDULER]
+#    - User says: "Can you have someone call me back?" -> Your response: [ACTION:SHOW_SCHEDULER]
 
-If no action is needed, proceed to Rule #2.
-// --- END ACTION TRIGGER ---
-"""
+# If no action is needed, proceed to Rule #2.
+# // --- END ACTION TRIGGER ---
+# """
 
-    # --- Final system message (structure preserved) ---
-    return {
-        "role": "system",
-        "content": f"""
-{non_negotiable_rule}
-{action_instruction}
-// --- BOT PERSONALITY ---
-{personality}
-// --- CONTEXT ---
-CONTEXT:
-{knowledge_base or "No relevant information found in the knowledge base."}
---- END CONTEXT ---
-"""
-    }
+#     # --- Final system message (structure preserved) ---
+#     return {
+#         "role": "system",
+#         "content": f"""
+# {non_negotiable_rule}
+# {action_instruction}
+# // --- BOT PERSONALITY ---
+# {personality}
+# // --- CONTEXT ---
+# CONTEXT:
+# {knowledge_base or "No relevant information found in the knowledge base."}
+# --- END CONTEXT ---
+# """
+#     }
 
 def create_chat_session(
     system_instruction: Dict[str, str],
@@ -340,6 +342,7 @@ async def generate_and_stream_ai_response(
         # -----------------------
         # Prompt + Chat
         # -----------------------
+        breakpoint()
         system_instruction = build_augmented_system_instruction(
             knowledge_base,
             ai_node_data.get("customPrompt") if ai_node_data else None

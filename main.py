@@ -345,17 +345,10 @@ async def upload_knowledge(
     files: list[UploadFile] = File(...),
     db: Session = Depends(get_db),
 ):
-    bot = db.execute(
-        select(Bot).where(Bot.id == bot_id)
-    ).scalar_one_or_none()
-
-    if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
 
     total_size = 0
-
+    results = []
     try:
-
         for file in files:
             content = await file.read()
             total_size += len(content)
@@ -374,16 +367,8 @@ async def upload_knowledge(
             # Chunk the extracted text, not the file
             chunks = extract_chunks_from_text(text)
             print("Extracted chunks:", len(chunks))
-            source = KnowledgeSource(
-                id=cuid.cuid(),
-                fileName=file.filename,
-                storagePath=storage_path,
-                fileType=file.content_type,
-                botId=bot_id,
-            )
 
-            db.add(source)
-            db.flush()  # sync flush
+            # Embedding and upsert (optional, keep if you want Pinecone)
             chunks = [clean_chunk(c) for c in chunks]
             chunks = [c.strip() for c in chunks if c.strip()]
             chunks = [c[:1000] for c in chunks if len(c) > 50]
@@ -397,7 +382,9 @@ async def upload_knowledge(
                     "values": emb,
                     "metadata": {
                         "botId": bot_id,
-                        "sourceId": source.id,
+                        "fileName": file.filename,
+                        "storagePath": storage_path,
+                        "fileType": file.content_type,
                         "content": chunk,
                     },
                 }
@@ -411,11 +398,16 @@ async def upload_knowledge(
 
             os.remove(temp_path)
 
-        db.commit()
-        return {"status": "success"}
+            results.append({
+                "fileName": file.filename,
+                "storagePath": storage_path,
+                "fileType": file.content_type,
+                "botId": bot_id
+            })
+
+        return {"uploaded": results}
 
     except Exception as e:
-        db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
 
