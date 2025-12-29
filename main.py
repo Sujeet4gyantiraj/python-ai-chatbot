@@ -192,6 +192,7 @@ async def upload_knowledge(
 @router.post("/generate-ai-response")
 async def generate_ai_response_endpoint(req: GenerateAIRequest):
     result = await generate_and_stream_ai_response(
+        bot_id=req.bot_id,
         session_id=req.session_id,
         last_user_message=req.last_user_message,
         ai_node_data=req.ai_node_data,

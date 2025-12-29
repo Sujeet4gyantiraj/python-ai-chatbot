@@ -35,6 +35,7 @@ EMBEDDING_DIM = 768
 # Request Models
 # =========================
 class GenerateAIRequest(BaseModel):
+    bot_id: str
     session_id: str
     last_user_message: str
     ai_node_data: Optional[Dict[str, Any]] = None
@@ -135,93 +136,6 @@ async def generate_chat_response(
             )
 
 
-# =========================
-# Prompt Builders
-# =========================
-# def build_augmented_system_instruction(
-#     knowledge_base: str,
-#     custom_instruction: Optional[str]
-# ) -> Dict[str, str]:
-
-#     personality = (
-#         custom_instruction
-#         if custom_instruction
-#         else "You are a helpful and professional customer support assistant."
-#     )
-
-#     return {
-#         "role": "system",
-#         "content": f"""
-# You are a customer support assistant.
-
-# Rules:
-# - Answer ONLY using CONTEXT.
-# - If answer not found, ask for contact details.
-# - Never invent information.
-
-# PERSONALITY:
-# {personality}
-
-# CONTEXT:
-# {knowledge_base or "No relevant information found in the knowledge base."}
-# """
-#     }
-
-
-# def build_augmented_system_instruction(
-#     knowledge_base: str,
-#     custom_instruction: Optional[str],
-# ) -> Dict[str, str]:
-#     # --- Non-negotiable rules (EXACT parity with Node.js) ---
-#     non_negotiable_rule = """
-# You are a customer support assistant. Your primary directive is to answer user questions based *only* on the provided CONTEXT. Follow these rules strictly:
-# 1. First, check if the user's intent matches one of the ACTION TRIGGERS below. If it does, your ONLY response MUST be the corresponding action tag (e.g., '[ACTION:REQUEST_AGENT]'). Do NOT add any other text.
-# 2. If no action is triggered, analyze the user's question. You MUST answer it using ONLY the information from the CONTEXT section. Do not use any external knowledge.
-# 3. If the CONTEXT does not contain the information needed to answer the question, you MUST respond with the following exact phrase and nothing else:
-#    "We’d love to assist you further! Kindly share your contact details and one of our customer care representatives will contact you shortly."
-# 4. If the user provides a simple greeting, engages in small talk, or expresses gratitude (e.g., 'hi', 'how are you', 'thanks'), respond naturally and courteously. Do not use the CONTEXT for these interactions.
-# 5. Never invent answers. If you are not 100% sure the answer is in the CONTEXT, use the fallback phrase from rule #3.
-# """
-
-#     # --- Personality logic (same truth table as Node.js) ---
-#     default_personality = "You are a helpful and professional customer support assistant."
-#     personality = (
-#         custom_instruction
-#         if custom_instruction is not None
-#         else default_personality
-#     )
-
-#     # --- Action triggers (EXACT copy) ---
-#     action_instruction = """
-# // --- ACTION TRIGGER ---
-# If the user's intent clearly matches one of the following, respond ONLY with the tag.
-
-# 1. **[ACTION:REQUEST_AGENT]**: The user is expressing frustration, is asking for help that you determine is not available in the CONTEXT, or is explicitly asking to speak to a human, a person, an agent, or wants live support.
-#    - User says: "I need to talk to a real person." -> Your response: [ACTION:REQUEST_AGENT]
-#    - User says: "This is frustrating, connect me to an agent." -> Your response: [ACTION:REQUEST_AGENT]
-
-# 2. **[ACTION:SHOW_SCHEDULER]**: The user has a clear intent to book a meeting, schedule a demo, set up a call, or ask for a callback. Do NOT trigger this for general pricing or info questions.
-#    - User says: "This sounds great, can I book a demo?" -> Your response: [ACTION:SHOW_SCHEDULER]
-#    - User says: "Can you have someone call me back?" -> Your response: [ACTION:SHOW_SCHEDULER]
-
-# If no action is needed, proceed to Rule #2.
-# // --- END ACTION TRIGGER ---
-# """
-
-#     # --- Final system message (structure preserved) ---
-#     return {
-#         "role": "system",
-#         "content": f"""
-# {non_negotiable_rule}
-# {action_instruction}
-# // --- BOT PERSONALITY ---
-# {personality}
-# // --- CONTEXT ---
-# CONTEXT:
-# {knowledge_base or "No relevant information found in the knowledge base."}
-# --- END CONTEXT ---
-# """
-#     }
 
 def create_chat_session(
     system_instruction: Dict[str, str],
@@ -245,7 +159,7 @@ def create_chat_session(
 # MAIN RAG FUNCTION
 # =========================
 async def generate_and_stream_ai_response(
-    
+    bot_id: str,
     session_id: str,
     last_user_message: str,
     ai_node_data: Optional[Dict[str, Any]] = None
@@ -264,14 +178,14 @@ async def generate_and_stream_ai_response(
         knowledge_base = ""
         if not ai_node_data or not ai_node_data.get("disableKnowledgeBase"):
             query_embedding = await embed_query(last_user_message)
-           
+            print("[RAG DEBUG] Pinecone query embedding:", query_embedding[:10], "... (truncated)")
             pinecone_response = pinecone_index.query(
                 vector=query_embedding,
                 top_k=5,
                 include_metadata=True,
-                # namespace can be passed as needed
+                namespace=bot_id
             )
-            # print("[RAG DEBUG] Pinecone response:", pinecone_response)
+            print("[RAG DEBUG] Pinecone response:", pinecone_response)
             SIMILARITY_THRESHOLD = 0.65
 
             if pinecone_response and pinecone_response.get("matches"):
@@ -284,6 +198,8 @@ async def generate_and_stream_ai_response(
                         and match.get("score", 0) >= SIMILARITY_THRESHOLD
                     )
                 )
+
+                
             print("[RAG DEBUG] Knowledge base for prompt:", knowledge_base)
 
         # Prompt + Chat

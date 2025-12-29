@@ -7,7 +7,7 @@ async def extract_chunks(file_path: str) -> list[str]:
         text = await f.read()
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
+        chunk_size=400,
         chunk_overlap=50
     )
 
