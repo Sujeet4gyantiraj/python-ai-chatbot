@@ -1,7 +1,5 @@
 # genai_service.py
 # FastAPI GenAI service using Pinecone for RAG (logic unchanged)
-
-
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
@@ -10,24 +8,18 @@ import httpx
 import asyncio
 import os
 from dotenv import load_dotenv
-
-from utils.prompt_builder import build_augmented_system_instruction
+from pinecone import Pinecone
+from utils.prompt_builder import build_augmented_system_instruction, format_prompt_for_llama3, get_memory, load_chat_history, save_chat_history
 
 
 load_dotenv()
 
-from sqlalchemy.orm import Session
 
-from db import SessionLocal
-from models import (
-    Session as ChatSession,
-    Message,
-)
 
 # =========================
 # Pinecone Setup
 # =========================
-from pinecone import Pinecone
+
 
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX")
@@ -247,84 +239,39 @@ def create_chat_session(
     return messages
 
 
-def format_prompt_for_llama3(messages: List[Dict[str, str]]) -> str:
-    prompt = "<|begin_of_text|>"
-    for msg in messages:
-        prompt += (
-            f"<|start_header_id|>{msg['role']}<|end_header_id|>\n\n"
-            f"{msg['content']}<|eot_id|>"
-        )
-    prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n"
-    return prompt
 
 
 # =========================
 # MAIN RAG FUNCTION
 # =========================
 async def generate_and_stream_ai_response(
+    
     session_id: str,
     last_user_message: str,
     ai_node_data: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Optional[str]]:
 
-    db: Session = SessionLocal()
-
     full_text = ""
     clean_text = ""
     action = None
-
     try:
-        # -----------------------
-        # Fetch Session
-        # -----------------------
-        session = (
-            db.query(ChatSession)
-            .filter(ChatSession.sessionId == session_id)
-            .first()
-        )
-
-        if not session:
-            raise Exception("Session not found")
-
-        # -----------------------
-        # Fetch History
-        # -----------------------
-        history = (
-            db.query(Message)
-            .filter(Message.sessionId == session_id)
-            .order_by(Message.createdAt.asc())
-            .limit(10)
-            .all()
-        )
-
-        history_for_ai = [
-            {
-                "role": "user" if m.role == "user" else "assistant",
-                "parts": [{"text": m.text}]
-            }
-            for m in history
-        ]
-
-        if history_for_ai and history_for_ai[0]["role"] == "assistant":
-            history_for_ai = history_for_ai[1:]
-
-        # -----------------------
-        # RAG (PINECONE)
-        # -----------------------
-        knowledge_base = ""
+        # Load previous chat history from Redis (last 5 messages)
+        prev_msgs = load_chat_history(session_id, k=5)
+        # Add the new user message
+        prev_msgs.append({"role": "user", "content": last_user_message})
        
-
+        # RAG (PINECONE)
+        knowledge_base = ""
         if not ai_node_data or not ai_node_data.get("disableKnowledgeBase"):
             query_embedding = await embed_query(last_user_message)
-            print("[RAG DEBUG] Pinecone query embedding:", query_embedding[:10], "... (truncated)")
+           
             pinecone_response = pinecone_index.query(
                 vector=query_embedding,
                 top_k=5,
                 include_metadata=True,
-                namespace=session.botId
+                # namespace can be passed as needed
             )
-            print("[RAG DEBUG] Pinecone response:", pinecone_response)
-            breakpoint()
+            # print("[RAG DEBUG] Pinecone response:", pinecone_response)
             SIMILARITY_THRESHOLD = 0.65
 
             if pinecone_response and pinecone_response.get("matches"):
@@ -339,23 +286,22 @@ async def generate_and_stream_ai_response(
                 )
             print("[RAG DEBUG] Knowledge base for prompt:", knowledge_base)
 
-        # -----------------------
         # Prompt + Chat
-        # -----------------------
-        breakpoint()
         system_instruction = build_augmented_system_instruction(
             knowledge_base,
             ai_node_data.get("customPrompt") if ai_node_data else None
         )
 
-        messages = create_chat_session(system_instruction, history_for_ai)
+        # Use Redis history for chat context (system + last 5 messages)
+        messages = [system_instruction] + prev_msgs[-5:]
         prompt = format_prompt_for_llama3(messages)
-        
         full_text = await generate_chat_response(prompt)
 
-        # -----------------------
+        # Add assistant response to history and save back to Redis
+        prev_msgs.append({"role": "assistant", "content": full_text})
+        save_chat_history(session_id, prev_msgs, k=5)
+
         # Extract ACTION
-        # -----------------------
         match = re.search(r"\[ACTION:(.*?)\]", full_text)
         if match:
             action = match.group(1)
@@ -368,7 +314,6 @@ async def generate_and_stream_ai_response(
             "cleanText": clean_text,
             "action": action
         }
-
     except Exception as e:
         print("[GENAI ERROR]", e)
         return {
@@ -376,9 +321,6 @@ async def generate_and_stream_ai_response(
             "cleanText": "",
             "action": None,
         }
-
-    finally:
-        db.close()
 
 
 

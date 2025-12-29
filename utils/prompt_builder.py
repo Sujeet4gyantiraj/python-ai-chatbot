@@ -1,3 +1,54 @@
+import os
+import json
+import redis
+
+# Redis connection (singleton)
+def get_redis_client():
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    return redis.Redis.from_url(redis_url, decode_responses=True)
+
+# Store and load last k messages for a session
+def save_chat_history(session_id: str, messages: list[dict], k: int = 5):
+    r = get_redis_client()
+    # Only keep last k messages
+    trimmed = messages[-k:]
+    r.set(f"chat_history:{session_id}", json.dumps(trimmed))
+
+def load_chat_history(session_id: str, k: int = 5) -> list[dict]:
+    r = get_redis_client()
+    data = r.get(f"chat_history:{session_id}")
+    if not data:
+        return []
+    try:
+        messages = json.loads(data)
+        return messages[-k:]
+    except Exception:
+        return []
+
+
+from langchain_classic.memory import ConversationBufferWindowMemory
+
+def get_memory() -> ConversationBufferWindowMemory:
+    """
+    Returns a ConversationBufferWindowMemory instance for storing the last 5 chat messages.
+    Note: If you want to persist or share memory across requests, you must store/load messages by session_id.
+    """
+    return ConversationBufferWindowMemory(k=5, return_messages=True)
+
+
+
+def format_prompt_for_llama3(messages: list[dict]) -> str:
+    """
+    Format messages for Llama 3 model prompt.
+    """
+    prompt = "<|begin_of_text|>"
+    for msg in messages:
+        prompt += (
+            f"<|start_header_id|>{msg['role']}<|end_header_id|>\n\n"
+            f"{msg['content']}<|eot_id|>"
+        )
+    prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n"
+    return prompt
 # New recommended way
 from langchain_core.prompts import PromptTemplate
 
@@ -7,6 +58,7 @@ def build_augmented_system_instruction(knowledge_base: str, custom_instruction: 
     """
     Build a system prompt using LangChain PromptTemplate for RAG context.
     """
+    # Removed breakpoint for production use
     default_personality = "You are a helpful and professional customer support assistant."
     personality = custom_instruction if custom_instruction is not None else default_personality
     template = (
