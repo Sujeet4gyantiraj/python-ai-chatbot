@@ -1,16 +1,3 @@
-# Improved prompt builder for LLM context
-def build_better_prompt(context: str, question: str) -> str:
-    return f"""
-You are a helpful assistant. Use ONLY the information in the CONTEXT below to answer the QUESTION. If the answer is not in the context, say: 'Sorry, I don't know based on the provided information.'
-
-CONTEXT:
-{context}
-
-QUESTION:
-{question}
-
-ANSWER:
-"""
 # genai_service.py
 # FastAPI GenAI service using Pinecone for RAG (logic unchanged)
 from fastapi.responses import JSONResponse
@@ -28,12 +15,7 @@ from utils.prompt_builder import build_augmented_system_instruction, format_prom
 load_dotenv()
 
 
-
-# =========================
 # Pinecone Setup
-# =========================
-
-
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX")
 pinecone_index = pc.Index(PINECONE_INDEX_NAME)
@@ -43,18 +25,6 @@ pinecone_index = pc.Index(PINECONE_INDEX_NAME)
 GENAI_API_BASE_URL = "https://aibot14.studyineurope.xyz/genaiapi"
 EMBEDDING_DIM = 768
 
-
-# =========================
-# Request Models
-# =========================
-class GenerateAIRequest(BaseModel):
-    bot_id: str
-    session_id: str
-    last_user_message: str
-    ai_node_data: Optional[Dict[str, Any]] = None
-
-
-# =========================
 
 # Embedding API (single and batch)
 async def generate_embedding(
@@ -78,9 +48,7 @@ async def generate_embedding(
 embed_query = generate_embedding
 
 
-# =========================
 # Chat Generation API
-# =========================
 async def generate_chat_response(
     prompt: str,
     max_tokens: int = 300,
@@ -100,7 +68,7 @@ async def generate_chat_response(
             res = await client.post(
                 f"{GENAI_API_BASE_URL}/generate/",
                 json={
-                    "prompt": str(prompt),
+                    "prompt": prompt,
                     "max_tokens": max_tokens,
                     "temperature": temperature,
                     "top_p": top_p,
@@ -113,7 +81,7 @@ async def generate_chat_response(
                     "I'm sorry, I'm having trouble generating a response right now. "
                     "Please try again."
                 )
-
+            breakpoint()
             data = res.json()
 
             if data.get("error"):
@@ -165,43 +133,43 @@ def create_chat_session(
 
 
 
-# =========================
+
 # MAIN RAG FUNCTION
-# =========================
 async def generate_and_stream_ai_response(
     bot_id: str,
     session_id: str,
-    last_user_message: str,
+    user_query: str,
     ai_node_data: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Optional[str]]:
     try:
+       
         full_text = ""
         clean_text = ""
         action = None
         try:
-            # Load previous chat history from Redis (last 5 messages)
 
-            prev_msgs = await load_chat_history(session_id, k=5)
+            # Load previous chat history from Redis (last 5 messages)
+            prev_msgs = await load_chat_history(bot_id, session_id, k=5)
             # Add the new user message
-            prev_msgs.append({"role": "user", "content": last_user_message})
+            prev_msgs.append({"role": "user", "content": user_query})
             # Only keep last 5 messages
             prev_msgs = prev_msgs[-5:]
-            await save_chat_history(session_id, prev_msgs, k=5)
+            await save_chat_history(bot_id, session_id, prev_msgs, k=5)
 
             # RAG (PINECONE)
             knowledge_base = ""
             if not ai_node_data or not ai_node_data.get("disableKnowledgeBase"):
-                query_embedding = await embed_query(last_user_message)
+                query_embedding = await embed_query(user_query)
                 print("[RAG DEBUG] Pinecone query embedding:", query_embedding[:10], "... (truncated)")
                 pinecone_response = pinecone_index.query(
                     vector=query_embedding,
-                    top_k=5,
+                    top_k=3,
                     include_metadata=True,
                     namespace=bot_id
                 )
                 print("[RAG DEBUG] Pinecone response:", pinecone_response)
-                SIMILARITY_THRESHOLD = 0.65
-
+                SIMILARITY_THRESHOLD = 0.5
+              
                 if pinecone_response and pinecone_response.get("matches"):
                     knowledge_base = "\n\n---\n\n".join(
                         match["metadata"]["content"]
@@ -212,21 +180,24 @@ async def generate_and_stream_ai_response(
                             and match.get("score", 0) >= SIMILARITY_THRESHOLD
                         )
                     )
-
-                    
                 print("[RAG DEBUG] Knowledge base for prompt:", knowledge_base)
-
-
-            # Build improved prompt for LLM
-            custom_instruction=''
-          
-            prompt = build_augmented_system_instruction(knowledge_base, last_user_message,custom_instruction=custom_instruction)
-           
+            breakpoint()
+            # Build improved prompt for LLM (only current user message)
+            custom_instruction = ''
+            prompt_dict = build_augmented_system_instruction(user_query,knowledge_base,custom_instruction=custom_instruction)
+            breakpoint()
+            if prompt_dict and isinstance(prompt_dict['system_message'], dict) and 'content' in prompt_dict['system_message']:
+                prompt = prompt_dict['system_message']['content']
+            else:
+                prompt = ""
+            print("[RAG DEBUG] Final prompt sent to LLM:\n", prompt)
             full_text = await generate_chat_response(prompt)
+            if not full_text:
+                full_text = ""
 
             # Add assistant response to history and save back to Redis
             prev_msgs.append({"role": "assistant", "content": full_text})
-            await save_chat_history(session_id, prev_msgs, k=5)
+            await save_chat_history(bot_id, session_id, prev_msgs, k=5)
 
             # Extract ACTION
             match = re.search(r"\[ACTION:(.*?)\]", full_text)

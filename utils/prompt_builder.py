@@ -5,6 +5,8 @@ import json
 
 import redis.asyncio as redis
 
+from intent_classification import IntentRouter
+
 # Async Redis connection (singleton)
 _redis_client = None
 async def get_redis_client():
@@ -14,15 +16,15 @@ async def get_redis_client():
         _redis_client = redis.from_url(redis_url, decode_responses=True)
     return _redis_client
 
-# Async store and load last k messages for a session
-async def save_chat_history(session_id: str, messages: list[dict], k: int = 5):
+# Async store and load last k messages for a session and bot
+async def save_chat_history(bot_id: str, session_id: str, messages: list[dict], k: int = 5):
     r = await get_redis_client()
     trimmed = messages[-k:]
-    await r.set(f"chat_history:{session_id}", json.dumps(trimmed))
+    await r.set(f"chat_history:{bot_id}:{session_id}", json.dumps(trimmed))
 
-async def load_chat_history(session_id: str, k: int = 5) -> list[dict]:
+async def load_chat_history(bot_id: str, session_id: str, k: int = 5) -> list[dict]:
     r = await get_redis_client()
-    data = await r.get(f"chat_history:{session_id}")
+    data = await r.get(f"chat_history:{bot_id}:{session_id}")
     if not data:
         return []
     try:
@@ -60,127 +62,331 @@ from langchain_core.prompts import PromptTemplate
 
 from typing import Optional, Dict
 
-# def build_augmented_system_instruction(knowledge_base: str, custom_instruction: Optional[str]) -> Dict[str, str]:
+# def build_augmented_system_instruction(knowledge_base: str, question: str, custom_instruction: Optional[str]) -> Dict[str, str]:
 #     """
-#     Build a system prompt using LangChain PromptTemplate for RAG context.
+#     Build an optimized system prompt for a customer support RAG chatbot.
+#     Focuses on clarity, consistency, and better response control.
 #     """
-#     # Removed breakpoint for production use
-#     default_personality = "You are a helpful and professional customer support assistant."
-#     personality = custom_instruction if custom_instruction is not None else default_personality
-#     template = (
-#         """
-# You are a customer support assistant. Your primary directive is to answer user questions based *only* on the provided CONTEXT and QUESTION below. Follow these rules strictly.\n\n
-# 1. First, check if the user's intent matches one of the ACTION TRIGGERS below. If it does, your ONLY response MUST be the corresponding action tag (e.g., '[ACTION:REQUEST_AGENT]'). Do NOT add any other text.\n
-# 2. If no action is triggered, analyze the user's question. You MUST answer it using ONLY the information from the CONTEXT section. Do not use any external knowledge.\n
-# 3. If the CONTEXT does not contain the information needed to answer the question, you MUST respond with the following exact phrase and nothing else:\n   'We’d love to assist you further! Kindly share your contact details and one of our customer care representatives will contact you shortly.'\n
-# 4. If the user provides a simple greeting, engages in small talk, or expresses gratitude (e.g., 'hi', 'how are you', 'thanks'), respond naturally and courteously. Do not use the CONTEXT for these interactions.\n
-# 5. Never invent answers. If you are not 100% sure the answer is in the CONTEXT, use the fallback phrase from rule #3.\n\n
-# // --- ACTION TRIGGER ---\n
-# If the user's intent clearly matches one of the following, respond ONLY with the tag.\n
-# 1. [ACTION:REQUEST_AGENT]: The user is expressing frustration, is asking for help that you determine is not available in the CONTEXT, or is explicitly asking to speak to a human, a person, an agent, or wants live support.\n
-# 2. [ACTION:SHOW_SCHEDULER]: The user has a clear intent to book a meeting, schedule a demo, set up a call, or ask for a callback. Do NOT trigger this for general pricing or info questions.\n
-# If no action is needed, proceed to Rule #2.\n
-# // --- END ACTION TRIGGER ---\n\n
-# // --- BOT PERSONALITY ---\n{personality}\n\n
-# // --- CONTEXT ---\nCONTEXT:\n{knowledge_base}\n--- END CONTEXT ---\n\n+// --- QUESTION ---\nQUESTION: {question}\n\n+"""
-#     )
-#     # Add 'question' as an input variable
+#     default_personality = "You are a friendly, professional customer support assistant dedicated to helping customers quickly and accurately."
+#     personality = custom_instruction if custom_instruction else default_personality
+    
+#     template = """You are a customer support assistant. Your role is to help users by answering their questions accurately and professionally.
+
+#     # CORE RULES (Follow in order)
+
+#     ## Rule 1: If the CONTEXT contains any related or partial information about the user's question, always summarize or paraphrase what the context says as helpfully as possible, even if there is no direct answer.
+
+#     ## Rule 2: Handle Action Triggers
+#     Before answering any question, check if the user's message matches an action trigger below. If it does, respond ONLY with the action tag—nothing else.
+
+#     **ACTION TRIGGERS:**
+#     - [ACTION:REQUEST_AGENT] - User is frustrated, explicitly asks for a human/agent/person/live support, or needs help beyond what the context provides
+#     - [ACTION:SHOW_SCHEDULER] - User wants to book a meeting, schedule a demo, set up a call, or request a callback (not for general pricing inquiries)
+
+#     ## Rule 3: Respond to Greetings & Small Talk Naturally
+#     If the user says hello, asks how you are, thanks you, or engages in casual conversation, respond warmly and naturally. No need to reference context for these.
+
+#     ## Rule 4: Answer Questions Using ONLY the Context
+#     For all other questions:
+#     - Search the CONTEXT below carefully for relevant information
+#     - Answer using ONLY what's in the CONTEXT
+#     - Be conversational but accurate
+#     - Do not add information from outside the CONTEXT
+#     - Do not make assumptions or fill in gaps
+
+#     ## Rule 5: If the CONTEXT truly lacks any relevant information, respond with exactly this:
+
+#     "I'd be happy to help you with that! To give you the most accurate information, please share your contact details and one of our customer care representatives will reach out to you shortly."
+
+#     ---
+
+#     # YOUR PERSONALITY
+#     {personality}
+#      ==== PERSONALITY END ====
+#     ---
+
+#     ==== CONTEXT START ====
+#     {knowledge_base}
+#     ==== CONTEXT END ====
+
+#     ---
+
+#     # USER QUESTION
+#     {question}
+#      ==== USER QUESTION END ====
+#     ---
+
+#     Remember: If there is any related or partial information in the context, always summarize it for the user. Only use the fallback response if there is truly nothing relevant.
+
+#     ---
+#     # INSTRUCTIONS TO ASSISTANT
+#     Respond ONLY with your reply to the user. Do NOT include any reasoning, rules, or explanations in your answer.
+    
+    
+#     # FINAL INSTRUCTION
+#     IMPORTANT: Respond ONLY with what the assistant would say to the user. Do NOT include any reasoning, rules, or explanations. Do NOT repeat this instruction.
+    
+    
+#     """
+
 #     prompt = PromptTemplate(
 #         input_variables=["knowledge_base", "personality", "question"],
 #         template=template
 #     )
-#     # The function now expects 'question' as an argument, so update the return accordingly
-#     def build(knowledge_base, personality, question):
-#         return {
-#             "role": "system",
-#             "content": prompt.format(
-#                 knowledge_base=knowledge_base or "No relevant information found in the knowledge base.",
-#                 personality=personality,
-#                 question=question
-#             )
-#         }
-#     # Return a function that can be called with the question
-#     return build
-#     # prompt = PromptTemplate(
-#     #     input_variables=["knowledge_base", "personality"],
-#     #     template=template
-#     # )
-#     # return {
-#     #     "role": "system",
-#     #     "content": prompt.format(knowledge_base=knowledge_base or "No relevant information found in the knowledge base.", personality=personality)
-#     # }
-
-
-
-def build_augmented_system_instruction(knowledge_base: str, question: str, custom_instruction: Optional[str]) -> Dict[str, str]:
-    """
-    Build an optimized system prompt for a customer support RAG chatbot.
-    Focuses on clarity, consistency, and better response control.
-    """
-    default_personality = "You are a friendly, professional customer support assistant dedicated to helping customers quickly and accurately."
-    personality = custom_instruction if custom_instruction else default_personality
     
-    template = """You are a customer support assistant. Your role is to help users by answering their questions accurately and professionally.
+#     breakpoint()
+#     return {
+#         "role": "system",
+#         "content": prompt.format(
+#             knowledge_base=knowledge_base or "No relevant information available in the knowledge base.",
+#             personality=personality,
+#             question=question
+#         )
+#     }
 
-    # CORE RULES (Follow in order)
-
-    ## Rule 1: Handle Action Triggers First
-    Before answering any question, check if the user's message matches an action trigger below. If it does, respond ONLY with the action tag—nothing else.
-
-    **ACTION TRIGGERS:**
-    - [ACTION:REQUEST_AGENT] - User is frustrated, explicitly asks for a human/agent/person/live support, or needs help beyond what the context provides
-    - [ACTION:SHOW_SCHEDULER] - User wants to book a meeting, schedule a demo, set up a call, or request a callback (not for general pricing inquiries)
-
-    ## Rule 2: Respond to Greetings & Small Talk Naturally
-    If the user says hello, asks how you are, thanks you, or engages in casual conversation, respond warmly and naturally. No need to reference context for these.
-
-    ## Rule 3: Answer Questions Using ONLY the Context
-    For all other questions:
-    - Search the CONTEXT below carefully for relevant information
-    - Answer using ONLY what's in the CONTEXT
-    - Be conversational but accurate
-    - Do not add information from outside the CONTEXT
-    - Do not make assumptions or fill in gaps
-
-    ## Rule 4: When Context Doesn't Have the Answer
-    If the CONTEXT lacks the information needed to answer the question, respond with exactly this:
-
-    "I'd be happy to help you with that! To give you the most accurate information, please share your contact details and one of our customer care representatives will reach out to you shortly."
-
-    ---
-
-    # YOUR PERSONALITY
-    {personality}
-
-    ---
-
-    # KNOWLEDGE BASE CONTEXT
-    {knowledge_base}
-
-    ---
-
-    # USER QUESTION
-    {question}
-
-    ---
-
-    Remember: Accuracy over speculation. If you're not certain the answer is in the context, use the fallback response."""
-
-    prompt = PromptTemplate(
-        input_variables=["knowledge_base", "personality", "question"],
-        template=template
-    )
     
-  
-    return {
-        "role": "system",
-        "content": prompt.format(
-            knowledge_base=knowledge_base or "No relevant information available in the knowledge base.",
-            personality=personality,
-            question=question
+
+
+
+
+from typing import Optional, Dict
+
+class ChatbotPrompts:
+    """
+    Modular prompt templates for different chatbot intents.
+    Optimized for Llama 3 understanding.
+    """
+    
+    @staticmethod
+    def build_qa_prompt(knowledge_base: str, question: str, custom_instruction: Optional[str] = None) -> Dict[str, str]:
+        """
+        Question-answering prompt for RAG-based responses.
+        """
+        default_personality = "You are a friendly, professional customer support assistant."
+        personality = custom_instruction if custom_instruction else default_personality
+        
+        template = """You are a customer support assistant helping a user with their question.
+
+# YOUR PERSONALITY
+{personality}
+
+# KNOWLEDGE BASE
+{knowledge_base}
+
+# USER QUESTION
+{question}
+
+# INSTRUCTIONS
+1. If the knowledge base contains ANY related information, summarize it clearly and helpfully for the user
+2. Answer using ONLY information from the knowledge base above
+3. Be conversational and friendly
+4. Do NOT invent information or add external knowledge
+5. If the knowledge base has NO relevant information at all, respond with exactly:
+   "I'd be happy to help you with that! To give you the most accurate information, please share your contact details and one of our customer care representatives will reach out to you shortly."
+
+Respond directly to the user now:"""
+
+        return {
+            "role": "system",
+            "content": template.format(
+                personality=personality,
+                knowledge_base=knowledge_base or "No information available.",
+                question=question
+            )
+        }
+    
+    @staticmethod
+    def build_greeting_prompt(custom_instruction: Optional[str] = None) -> Dict[str, str]:
+        """
+        Simple prompt for handling greetings and small talk.
+        """
+        default_personality = "You are a friendly, professional customer support assistant."
+        personality = custom_instruction if custom_instruction else default_personality
+        
+        template = """You are a customer support assistant having a friendly conversation.
+
+# YOUR PERSONALITY
+{personality}
+
+# INSTRUCTIONS
+The user is greeting you or making small talk (saying hello, asking how you are, thanking you, etc.).
+
+Respond warmly and naturally. Keep it brief and friendly. Then offer to help them with anything they need.
+
+Respond directly to the user now:"""
+
+        return {
+            "role": "system",
+            "content": template.format(personality=personality)
+        }
+    
+    @staticmethod
+    def build_agent_request_prompt(custom_instruction: Optional[str] = None) -> Dict[str, str]:
+        """
+        Prompt for when user wants to speak with a human agent.
+        """
+        default_personality = "You are a friendly, professional customer support assistant."
+        personality = custom_instruction if custom_instruction else default_personality
+        
+        template = """You are a customer support assistant helping transfer a user to a human agent.
+
+# YOUR PERSONALITY
+{personality}
+
+# INSTRUCTIONS
+The user wants to speak with a human agent, is frustrated, or needs help beyond what you can provide.
+
+Acknowledge their request warmly and let them know you're connecting them with a team member.
+
+After your brief acknowledgment, respond with ONLY this action tag on a new line:
+[ACTION:REQUEST_AGENT]
+
+Respond directly to the user now:"""
+
+        return {
+            "role": "system",
+            "content": template.format(personality=personality)
+        }
+    
+    @staticmethod
+    def build_scheduler_prompt(custom_instruction: Optional[str] = None) -> Dict[str, str]:
+        """
+        Prompt for when user wants to schedule a meeting/demo/call.
+        """
+        default_personality = "You are a friendly, professional customer support assistant."
+        personality = custom_instruction if custom_instruction else default_personality
+        
+        template = """You are a customer support assistant helping a user schedule a meeting.
+
+# YOUR PERSONALITY
+{personality}
+
+# INSTRUCTIONS
+The user wants to book a meeting, schedule a demo, set up a call, or request a callback.
+
+Acknowledge their request warmly and let them know you're opening the scheduler.
+
+After your brief acknowledgment, respond with ONLY this action tag on a new line:
+[ACTION:SHOW_SCHEDULER]
+
+Respond directly to the user now:"""
+
+        return {
+            "role": "system",
+            "content": template.format(personality=personality)
+        }
+
+
+
+
+
+# Main router function
+def build_augmented_system_instruction(
+    user_message: str,
+    knowledge_base: Optional[str] = None,
+    custom_instruction: Optional[str] = None,
+    intent: Optional[str] = None
+) -> Dict[str, any]:
+    """
+    Automatically route user message to appropriate prompt.
+    
+    Args:
+        user_message: The user's input text
+        knowledge_base: Context for QA (optional)
+        custom_instruction: Optional custom personality
+        intent: Optional manual intent override (one of 'qa', 'greeting', 'agent_request', 'scheduler')
+    
+    Returns:
+        Dict with 'system_message', 'detected_intent', and 'confidence'
+    """
+    prompts = ChatbotPrompts()
+    router = IntentRouter()
+    
+    # Detect intent if not provided
+    if intent is None:
+        detected_intent = router.detect_intent(user_message)
+    else:
+        detected_intent = intent
+    
+    confidence = router.get_confidence_score(user_message, detected_intent)
+    
+    # Build appropriate prompt
+    if detected_intent == "qa":
+        system_msg = prompts.build_qa_prompt(
+            knowledge_base or "",
+            user_message,
+            custom_instruction
         )
+    elif detected_intent == "greeting":
+        system_msg = prompts.build_greeting_prompt(custom_instruction)
+    elif detected_intent == "agent_request":
+        system_msg = prompts.build_agent_request_prompt(custom_instruction)
+    elif detected_intent == "scheduler":
+        system_msg = prompts.build_scheduler_prompt(custom_instruction)
+    else:
+        raise ValueError(f"Unknown intent: {detected_intent}")
+    
+    return {
+        "system_message": system_msg,
+        "detected_intent": detected_intent,
+        "confidence": confidence
     }
 
-   
 
-    
+# Example usage:
+"""
+# Test cases showing improved accuracy:
+
+# 1. Greeting (short message bonus)
+result = build_augmented_system_instruction("Hi there!")
+# Intent: greeting, Confidence: 0.9
+
+# 2. Frustrated user (frustration signal boost)
+result = build_augmented_system_instruction(
+    "This is ridiculous, I need to speak to a human agent now"
+)
+# Intent: agent_request, Confidence: 0.95+
+
+# 3. Scheduler with context
+result = build_augmented_system_instruction(
+    "Can we schedule a demo call for next Tuesday?"
+)
+# Intent: scheduler, Confidence: 0.8+
+
+# 4. False positive avoided (pricing question, not booking)
+result = build_augmented_system_instruction(
+    "How much does a demo cost? What are your meeting room prices?"
+)
+# Intent: qa (scheduler heavily penalized), Confidence: 0.75
+
+# 5. Question detection
+result = build_augmented_system_instruction(
+    "What are your business hours?"
+)
+# Intent: qa, Confidence: 0.75
+
+# 6. Ambiguous agent request (weak signal)
+result = build_augmented_system_instruction(
+    "Can I talk to someone about this?"
+)
+# Intent: agent_request, Confidence: 0.5-0.6
+
+# 7. Strong scheduler signal
+result = build_augmented_system_instruction(
+    "I'd like to book an appointment to discuss pricing"
+)
+# Intent: scheduler, Confidence: 0.8+ (strong phrase overrides "pricing")
+
+# Low confidence handling
+result = build_augmented_system_instruction("xyz123")
+if result['confidence'] < 0.4:
+    # Fall back to QA or ask clarifying question
+    print("Unclear intent, using QA default")
+
+# With knowledge base for QA
+result = build_augmented_system_instruction(
+    user_message="How does your product work?",
+    knowledge_base="Our product uses AI to automate customer support...",
+    custom_instruction="You are AcmeCorp's support bot"
+)
+"""
