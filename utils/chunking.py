@@ -21,7 +21,7 @@ async def extract_chunks(file_path: str) -> list[str]:
 def extract_chunks_from_text(text: str) -> list[str]:
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=300,
+        chunk_size=500,
         chunk_overlap=50
     )
     return [chunk for chunk in splitter.split_text(text) if len(chunk.strip()) >= 20]

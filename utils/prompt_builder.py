@@ -5,7 +5,7 @@ import json
 
 import redis.asyncio as redis
 
-from intent_classification import IntentRouter
+from intent_classification import SemanticRouteClassifier
 
 # Async Redis connection (singleton)
 _redis_client = None
@@ -158,66 +158,90 @@ class ChatbotPrompts:
     """
     
     @staticmethod
-    def build_qa_prompt(knowledge_base: str, question: str, custom_instruction: Optional[str] = None) -> Dict[str, str]:
-        """
-        Question-answering prompt for RAG-based responses.
-        """
-        default_personality = "You are a friendly, professional customer support assistant."
-        personality = custom_instruction if custom_instruction else default_personality
-        
-        template = """You are a customer support assistant helping a user with their question.
+    def build_qa_prompt(
+        knowledge_base: str,
+        question: str,
+        custom_instruction: Optional[str] = None
+    ) -> Dict[str, str]:
 
-# YOUR PERSONALITY
-{personality}
+        personality = custom_instruction or (
+            "You are a friendly, professional customer support assistant."
+        )
 
-# KNOWLEDGE BASE
+        template = """TASK: QUESTION ANSWERING (NOT DOCUMENT CONTINUATION)
+
+You are answering a question using a provided knowledge base.
+
+Rules you MUST follow:
+- Do NOT continue or rewrite the knowledge base
+- Do NOT repeat section titles or document text
+- Do NOT explain your reasoning
+- Output ONLY the final answer
+- If the answer is NOT explicitly present, output the fallback sentence EXACTLY
+
+Fallback sentence:
+"I'd be happy to help you with that! To give you the most accurate information, please share your contact details and one of our customer care representatives will reach out to you shortly."
+
+BEGIN KNOWLEDGE BASE
+====================
 {knowledge_base}
+====================
+END KNOWLEDGE BASE
 
-# USER QUESTION
+QUESTION:
 {question}
 
-# INSTRUCTIONS
-1. If the knowledge base contains ANY related information, summarize it clearly and helpfully for the user
-2. Answer using ONLY information from the knowledge base above
-3. Be conversational and friendly
-4. Do NOT invent information or add external knowledge
-5. If the knowledge base has NO relevant information at all, respond with exactly:
-   "I'd be happy to help you with that! To give you the most accurate information, please share your contact details and one of our customer care representatives will reach out to you shortly."
+FINAL ANSWER (one paragraph, plain text only):
 
-Respond directly to the user now:"""
+    """
 
         return {
             "role": "system",
             "content": template.format(
                 personality=personality,
-                knowledge_base=knowledge_base or "No information available.",
+                knowledge_base=knowledge_base or "",
                 question=question
             )
         }
-    
     @staticmethod
-    def build_greeting_prompt(custom_instruction: Optional[str] = None) -> Dict[str, str]:
+    def build_greeting_prompt(
+        custom_instruction: Optional[str] = None,
+        user_message: Optional[str] = None
+    ) -> Dict[str, str]:
         """
-        Simple prompt for handling greetings and small talk.
+        Deterministic prompt for greetings and small talk.
+        Ensures a single, clean response with no repetition.
         """
         default_personality = "You are a friendly, professional customer support assistant."
         personality = custom_instruction if custom_instruction else default_personality
-        
-        template = """You are a customer support assistant having a friendly conversation.
 
-# YOUR PERSONALITY
-{personality}
+        template = """You are a customer support assistant.
 
-# INSTRUCTIONS
-The user is greeting you or making small talk (saying hello, asking how you are, thanking you, etc.).
+    # YOUR PERSONALITY
+    {personality}
 
-Respond warmly and naturally. Keep it brief and friendly. Then offer to help them with anything they need.
+    # USER MESSAGE
+    {user_message}
 
-Respond directly to the user now:"""
+    # INSTRUCTIONS
+    The user is greeting you or making small talk.
+
+    Respond with ONE short, friendly reply (1–2 sentences).
+    Do NOT repeat greetings.
+    Do NOT ask multiple questions.
+    Do NOT continue the conversation.
+    Do NOT explain your reasoning.
+    Stop immediately after your reply.
+
+    Your response must contain ONLY what you would say to the user.
+    """
 
         return {
             "role": "system",
-            "content": template.format(personality=personality)
+            "content": template.format(
+                personality=personality,
+                user_message=user_message or ""
+            )
         }
     
     @staticmethod
@@ -300,36 +324,44 @@ def build_augmented_system_instruction(
         Dict with 'system_message', 'detected_intent', and 'confidence'
     """
     prompts = ChatbotPrompts()
-    router = IntentRouter()
+    # breakpoint()
+    router = SemanticRouteClassifier(confidence_threshold=0.60)
     
     # Detect intent if not provided
     if intent is None:
-        detected_intent = router.detect_intent(user_message)
+        detected_intent,confidence_data,detailed = router.classify(user_message, return_scores=True)
+        
     else:
         detected_intent = intent
     
-    confidence = router.get_confidence_score(user_message, detected_intent)
+    # confidence = router.get_confidence_score(user_message, detected_intent)
     
     # Build appropriate prompt
-    if detected_intent == "qa":
+    if detected_intent == "normal_qa":
         system_msg = prompts.build_qa_prompt(
             knowledge_base or "",
             user_message,
             custom_instruction
         )
+        max_tokens =300
+
     elif detected_intent == "greeting":
-        system_msg = prompts.build_greeting_prompt(custom_instruction)
+        system_msg = prompts.build_greeting_prompt(custom_instruction,user_message)
+        max_tokens =20
     elif detected_intent == "agent_request":
         system_msg = prompts.build_agent_request_prompt(custom_instruction)
+        max_tokens =50
     elif detected_intent == "scheduler":
         system_msg = prompts.build_scheduler_prompt(custom_instruction)
+        max_tokens =50
     else:
         raise ValueError(f"Unknown intent: {detected_intent}")
     
     return {
         "system_message": system_msg,
         "detected_intent": detected_intent,
-        "confidence": confidence
+        "confidence": confidence_data,
+        "max_tokens":max_tokens
     }
 
 

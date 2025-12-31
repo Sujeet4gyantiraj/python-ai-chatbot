@@ -54,6 +54,7 @@ async def generate_chat_response(
     max_tokens: int = 300,
     temperature: float = 0.1,
     top_p: float = 0.9,
+    
 ) -> str:
 
     timeout = httpx.Timeout(
@@ -72,6 +73,15 @@ async def generate_chat_response(
                     "max_tokens": max_tokens,
                     "temperature": temperature,
                     "top_p": top_p,
+                    "stop": [
+                        "END"
+                        "BEGIN KNOWLEDGE BASE",
+                        "END KNOWLEDGE BASE",
+                        "====================",
+                        "QUESTION:",
+                        "TASK:",
+                        "\n\n"
+                    ]
                 },
             )
 
@@ -81,7 +91,7 @@ async def generate_chat_response(
                     "I'm sorry, I'm having trouble generating a response right now. "
                     "Please try again."
                 )
-            breakpoint()
+        
             data = res.json()
 
             if data.get("error"):
@@ -181,17 +191,20 @@ async def generate_and_stream_ai_response(
                         )
                     )
                 print("[RAG DEBUG] Knowledge base for prompt:", knowledge_base)
-            breakpoint()
+            # breakpoint()
             # Build improved prompt for LLM (only current user message)
             custom_instruction = ''
             prompt_dict = build_augmented_system_instruction(user_query,knowledge_base,custom_instruction=custom_instruction)
-            breakpoint()
+            # breakpoint()
             if prompt_dict and isinstance(prompt_dict['system_message'], dict) and 'content' in prompt_dict['system_message']:
                 prompt = prompt_dict['system_message']['content']
+                max_tokens = prompt_dict.get('max_tokens',300)
             else:
                 prompt = ""
+                max_tokens = 300
             print("[RAG DEBUG] Final prompt sent to LLM:\n", prompt)
-            full_text = await generate_chat_response(prompt)
+            breakpoint()
+            full_text = await generate_chat_response(prompt,max_tokens=max_tokens,temperature=0.2,top_p=0.9)
             if not full_text:
                 full_text = ""
 
