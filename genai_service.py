@@ -9,7 +9,8 @@ import asyncio
 import os
 from dotenv import load_dotenv
 from pinecone import Pinecone
-from utils.prompt_builder import build_augmented_system_instruction, format_prompt_for_llama3, get_memory, load_chat_history, save_chat_history
+from utils.prompt_builder import build_augmented_system_instruction, format_prompt_for_llama3, get_memory
+from utils.redis_client import load_chat_history, save_chat_history
 
 
 load_dotenv()
@@ -91,7 +92,7 @@ async def generate_chat_response(
                     "I'm sorry, I'm having trouble generating a response right now. "
                     "Please try again."
                 )
-        
+            # breakpoint()
             data = res.json()
 
             if data.get("error"):
@@ -143,6 +144,18 @@ def create_chat_session(
 
 
 
+def extract_before_hash(text: str) -> str:
+    """
+    Extract text from the beginning until the first '#' character.
+    """
+    match = re.match(r"^(.*?)\s*#", text)
+    if match:
+        return match.group(1).strip()
+    return text.strip()
+
+
+
+
 
 # MAIN RAG FUNCTION
 async def generate_and_stream_ai_response(
@@ -158,16 +171,17 @@ async def generate_and_stream_ai_response(
         action = None
         try:
 
-            # Load previous chat history from Redis (last 5 messages)
-            prev_msgs = await load_chat_history(bot_id, session_id, k=5)
-            # Add the new user message
-            prev_msgs.append({"role": "user", "content": user_query})
-            # Only keep last 5 messages
-            prev_msgs = prev_msgs[-5:]
-            await save_chat_history(bot_id, session_id, prev_msgs, k=5)
+            # # Load previous chat history from Redis (last 5 messages)
+            # prev_msgs = await load_chat_history(bot_id, session_id, k=5)
+            # # Add the new user message
+            # prev_msgs.append({"role": "user", "content": user_query})
+            # # Only keep last 5 messages
+            # prev_msgs = prev_msgs[-5:]
+            # await save_chat_history(bot_id, session_id, prev_msgs, k=5)
 
             # RAG (PINECONE)
             knowledge_base = ""
+            # breakpoint()
             if not ai_node_data or not ai_node_data.get("disableKnowledgeBase"):
                 query_embedding = await embed_query(user_query)
                 print("[RAG DEBUG] Pinecone query embedding:", query_embedding[:10], "... (truncated)")
@@ -178,7 +192,7 @@ async def generate_and_stream_ai_response(
                     namespace=bot_id
                 )
                 print("[RAG DEBUG] Pinecone response:", pinecone_response)
-                SIMILARITY_THRESHOLD = 0.5
+                SIMILARITY_THRESHOLD = 0.8
               
                 if pinecone_response and pinecone_response.get("matches"):
                     knowledge_base = "\n\n---\n\n".join(
@@ -194,24 +208,40 @@ async def generate_and_stream_ai_response(
             # breakpoint()
             # Build improved prompt for LLM (only current user message)
             custom_instruction = ''
+            # breakpoint()
+            # 1. Load previous history
+            history = await load_chat_history(bot_id, session_id, k=5)
             prompt_dict = build_augmented_system_instruction(user_query,knowledge_base,custom_instruction=custom_instruction)
             # breakpoint()
             if prompt_dict and isinstance(prompt_dict['system_message'], dict) and 'content' in prompt_dict['system_message']:
-                prompt = prompt_dict['system_message']['content']
+                system_prompt = prompt_dict['system_message']['content']
                 max_tokens = prompt_dict.get('max_tokens',300)
             else:
                 prompt = ""
                 max_tokens = 300
-            print("[RAG DEBUG] Final prompt sent to LLM:\n", prompt)
-            breakpoint()
+            print("[RAG DEBUG] Final prompt sent to LLM:\n", system_prompt)
+
+
+            # 3. Build full message list
+            messages = [
+                prompt_dict['system_message'],
+                *history,
+                {"role": "user", "content": user_query}
+            ]
+
+            # 4. Format prompt for Llama-3
+            prompt = format_prompt_for_llama3(messages)
+
+            # breakpoint()
             full_text = await generate_chat_response(prompt,max_tokens=max_tokens,temperature=0.2,top_p=0.9)
             if not full_text:
                 full_text = ""
 
-            # Add assistant response to history and save back to Redis
-            prev_msgs.append({"role": "assistant", "content": full_text})
-            await save_chat_history(bot_id, session_id, prev_msgs, k=5)
+            
+          
 
+            
+            
             # Extract ACTION
             match = re.search(r"\[ACTION:(.*?)\]", full_text)
             if match:
@@ -219,6 +249,15 @@ async def generate_and_stream_ai_response(
                 clean_text = re.sub(r"\[ACTION:.*?\]", "", full_text).strip()
             else:
                 clean_text = full_text.strip()
+            if prompt_dict.get("detected_intent") == "greeting":
+                clean_text = extract_before_hash(clean_text)
+
+
+            # 6. Save back to Redis
+            history.append({"role": "user", "content": user_query})
+            history.append({"role": "assistant", "content": clean_text})
+
+            await save_chat_history(bot_id, session_id, history, k=5)
 
             return {
                 "fullText": full_text,
