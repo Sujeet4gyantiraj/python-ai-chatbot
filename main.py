@@ -21,7 +21,7 @@ load_dotenv()
 
 
 # App & Router Setup
-app = FastAPI(title="RAG API", version="1.0")
+app = FastAPI(title="RAG API", version="1.0",root_path="/ragai")
 router = APIRouter()
 
 

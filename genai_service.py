@@ -92,7 +92,7 @@ async def generate_chat_response(
                     "I'm sorry, I'm having trouble generating a response right now. "
                     "Please try again."
                 )
-            # breakpoint()
+           
             data = res.json()
            
             if data.get("error"):
@@ -187,7 +187,7 @@ async def generate_and_stream_ai_response(
                 print("[RAG DEBUG] Pinecone response:", pinecone_response)
                 SIMILARITY_THRESHOLD = 0.55
               
-                if pinecone_response and pinecone_response.get("matches"):
+                if pinecone_response and pinecone_response.matches:
                     knowledge_base = "\n\n---\n\n".join(
                         match["metadata"]["content"]
                         for match in pinecone_response["matches"]
@@ -203,7 +203,8 @@ async def generate_and_stream_ai_response(
             custom_instruction = ''
           
             # 1. Load previous history
-            history = await load_chat_history(bot_id, session_id, k=5)
+       
+            history = await load_chat_history(bot_id, session_id, k=10)
             prompt_dict = build_augmented_system_instruction(user_query,knowledge_base,custom_instruction=custom_instruction)
            
             if prompt_dict and isinstance(prompt_dict['system_message'], dict) and 'content' in prompt_dict['system_message']:
@@ -212,7 +213,7 @@ async def generate_and_stream_ai_response(
             else:
                 prompt = ""
                 max_tokens = 300
-           
+         
             print("[RAG DEBUG] Final prompt sent to LLM:\n", system_prompt)
             action = prompt_dict.get("detected_intent", None)
 
@@ -251,7 +252,7 @@ async def generate_and_stream_ai_response(
             history.append({"role": "user", "content": user_query})
             history.append({"role": "assistant", "content": clean_text})
 
-            await save_chat_history(bot_id, session_id, history, k=5)
+            await save_chat_history(bot_id, session_id, history, k=10)
 
             return {
                 "fullText": full_text,
