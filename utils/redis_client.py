@@ -43,36 +43,3 @@ async def load_chat_history(bot_id: str, session_id: str, k: int = 5) -> list[di
 
 
 
-# import os
-# import json
-
-
-# import redis.asyncio as redis
-
-# from intent_classification import SemanticRouteClassifier
-
-# # Async Redis connection (singleton)
-# _redis_client = None
-# async def get_redis_client():
-#     global _redis_client
-#     if _redis_client is None:
-#         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-#         _redis_client = redis.from_url(redis_url, decode_responses=True)
-#     return _redis_client
-
-# # Async store and load last k messages for a session and bot
-# async def save_chat_history(bot_id: str, session_id: str, messages: list[dict], k: int = 5):
-#     r = await get_redis_client()
-#     trimmed = messages[-k:]
-#     await r.set(f"chat_history:{bot_id}:{session_id}", json.dumps(trimmed))
-
-# async def load_chat_history(bot_id: str, session_id: str, k: int = 5) -> list[dict]:
-#     r = await get_redis_client()
-#     data = await r.get(f"chat_history:{bot_id}:{session_id}")
-#     if not data:
-#         return []
-#     try:
-#         messages = json.loads(data)
-#         return messages[-k:]
-#     except Exception:
-#         return []

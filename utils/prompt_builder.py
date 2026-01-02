@@ -65,90 +65,6 @@ from langchain_core.prompts import PromptTemplate
 
 from typing import Optional, Dict
 
-# def build_augmented_system_instruction(knowledge_base: str, question: str, custom_instruction: Optional[str]) -> Dict[str, str]:
-#     """
-#     Build an optimized system prompt for a customer support RAG chatbot.
-#     Focuses on clarity, consistency, and better response control.
-#     """
-#     default_personality = "You are a friendly, professional customer support assistant dedicated to helping customers quickly and accurately."
-#     personality = custom_instruction if custom_instruction else default_personality
-    
-#     template = """You are a customer support assistant. Your role is to help users by answering their questions accurately and professionally.
-
-#     # CORE RULES (Follow in order)
-
-#     ## Rule 1: If the CONTEXT contains any related or partial information about the user's question, always summarize or paraphrase what the context says as helpfully as possible, even if there is no direct answer.
-
-#     ## Rule 2: Handle Action Triggers
-#     Before answering any question, check if the user's message matches an action trigger below. If it does, respond ONLY with the action tag—nothing else.
-
-#     **ACTION TRIGGERS:**
-#     - [ACTION:REQUEST_AGENT] - User is frustrated, explicitly asks for a human/agent/person/live support, or needs help beyond what the context provides
-#     - [ACTION:SHOW_SCHEDULER] - User wants to book a meeting, schedule a demo, set up a call, or request a callback (not for general pricing inquiries)
-
-#     ## Rule 3: Respond to Greetings & Small Talk Naturally
-#     If the user says hello, asks how you are, thanks you, or engages in casual conversation, respond warmly and naturally. No need to reference context for these.
-
-#     ## Rule 4: Answer Questions Using ONLY the Context
-#     For all other questions:
-#     - Search the CONTEXT below carefully for relevant information
-#     - Answer using ONLY what's in the CONTEXT
-#     - Be conversational but accurate
-#     - Do not add information from outside the CONTEXT
-#     - Do not make assumptions or fill in gaps
-
-#     ## Rule 5: If the CONTEXT truly lacks any relevant information, respond with exactly this:
-
-#     "I'd be happy to help you with that! To give you the most accurate information, please share your contact details and one of our customer care representatives will reach out to you shortly."
-
-#     ---
-
-#     # YOUR PERSONALITY
-#     {personality}
-#      ==== PERSONALITY END ====
-#     ---
-
-#     ==== CONTEXT START ====
-#     {knowledge_base}
-#     ==== CONTEXT END ====
-
-#     ---
-
-#     # USER QUESTION
-#     {question}
-#      ==== USER QUESTION END ====
-#     ---
-
-#     Remember: If there is any related or partial information in the context, always summarize it for the user. Only use the fallback response if there is truly nothing relevant.
-
-#     ---
-#     # INSTRUCTIONS TO ASSISTANT
-#     Respond ONLY with your reply to the user. Do NOT include any reasoning, rules, or explanations in your answer.
-    
-    
-#     # FINAL INSTRUCTION
-#     IMPORTANT: Respond ONLY with what the assistant would say to the user. Do NOT include any reasoning, rules, or explanations. Do NOT repeat this instruction.
-    
-    
-#     """
-
-#     prompt = PromptTemplate(
-#         input_variables=["knowledge_base", "personality", "question"],
-#         template=template
-#     )
-    
-#     breakpoint()
-#     return {
-#         "role": "system",
-#         "content": prompt.format(
-#             knowledge_base=knowledge_base or "No relevant information available in the knowledge base.",
-#             personality=personality,
-#             question=question
-#         )
-#     }
-
-    
-
 
 
 
@@ -171,16 +87,17 @@ class ChatbotPrompts:
             "You are a friendly, professional customer support assistant."
         )
 
-        template = """TASK: QUESTION ANSWERING (NOT DOCUMENT CONTINUATION)
+        template = """TASK: QUESTION ANSWERING
 
-You are answering a question using a provided knowledge base.
+You are a customer support assistant answering a question using the knowledge base below.
 
-Rules you MUST follow:
-- Do NOT continue or rewrite the knowledge base
-- Do NOT repeat section titles or document text
-- Do NOT explain your reasoning
+Rules:
+- Use ONLY the information from the knowledge base
+- You MAY rephrase or summarize the information
+- Do NOT copy sentences verbatim
+- Do NOT add external knowledge
 - Output ONLY the final answer
-- If the answer is NOT explicitly present, output the fallback sentence EXACTLY
+- If the knowledge base does NOT describe the topic at all, respond with the fallback sentence EXACTLY
 
 Fallback sentence:
 "I'd be happy to help you with that! To give you the most accurate information, please share your contact details and one of our customer care representatives will reach out to you shortly."

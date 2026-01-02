@@ -64,7 +64,7 @@ async def generate_chat_response(
         write=10.0,
         pool=10.0
     )
- 
+
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             res = await client.post(
@@ -75,7 +75,7 @@ async def generate_chat_response(
                     "temperature": temperature,
                     "top_p": top_p,
                     "stop": [
-                        "END"
+                        "END",
                         "BEGIN KNOWLEDGE BASE",
                         "END KNOWLEDGE BASE",
                         "====================",
@@ -94,7 +94,7 @@ async def generate_chat_response(
                 )
             # breakpoint()
             data = res.json()
-
+           
             if data.get("error"):
                 if data.get("safety") and "unsafe" in data["safety"]:
                     return "I cannot respond to that request as it violates safety policies."
@@ -171,14 +171,7 @@ async def generate_and_stream_ai_response(
         action = None
         try:
 
-            # # Load previous chat history from Redis (last 5 messages)
-            # prev_msgs = await load_chat_history(bot_id, session_id, k=5)
-            # # Add the new user message
-            # prev_msgs.append({"role": "user", "content": user_query})
-            # # Only keep last 5 messages
-            # prev_msgs = prev_msgs[-5:]
-            # await save_chat_history(bot_id, session_id, prev_msgs, k=5)
-
+         
             # RAG (PINECONE)
             knowledge_base = ""
             # breakpoint()
@@ -187,12 +180,12 @@ async def generate_and_stream_ai_response(
                 print("[RAG DEBUG] Pinecone query embedding:", query_embedding[:10], "... (truncated)")
                 pinecone_response = pinecone_index.query(
                     vector=query_embedding,
-                    top_k=3,
+                    top_k=5,
                     include_metadata=True,
                     namespace=bot_id
                 )
                 print("[RAG DEBUG] Pinecone response:", pinecone_response)
-                SIMILARITY_THRESHOLD = 0.8
+                SIMILARITY_THRESHOLD = 0.55
               
                 if pinecone_response and pinecone_response.get("matches"):
                     knowledge_base = "\n\n---\n\n".join(
@@ -205,22 +198,23 @@ async def generate_and_stream_ai_response(
                         )
                     )
                 print("[RAG DEBUG] Knowledge base for prompt:", knowledge_base)
-            # breakpoint()
+          
             # Build improved prompt for LLM (only current user message)
             custom_instruction = ''
-            # breakpoint()
+          
             # 1. Load previous history
             history = await load_chat_history(bot_id, session_id, k=5)
             prompt_dict = build_augmented_system_instruction(user_query,knowledge_base,custom_instruction=custom_instruction)
-            # breakpoint()
+           
             if prompt_dict and isinstance(prompt_dict['system_message'], dict) and 'content' in prompt_dict['system_message']:
                 system_prompt = prompt_dict['system_message']['content']
                 max_tokens = prompt_dict.get('max_tokens',300)
             else:
                 prompt = ""
                 max_tokens = 300
+           
             print("[RAG DEBUG] Final prompt sent to LLM:\n", system_prompt)
-
+            action = prompt_dict.get("detected_intent", None)
 
             # 3. Build full message list
             messages = [
@@ -232,7 +226,7 @@ async def generate_and_stream_ai_response(
             # 4. Format prompt for Llama-3
             prompt = format_prompt_for_llama3(messages)
 
-            # breakpoint()
+          
             full_text = await generate_chat_response(prompt,max_tokens=max_tokens,temperature=0.2,top_p=0.9)
             if not full_text:
                 full_text = ""
@@ -245,7 +239,7 @@ async def generate_and_stream_ai_response(
             # Extract ACTION
             match = re.search(r"\[ACTION:(.*?)\]", full_text)
             if match:
-                action = match.group(1)
+                # action = match.group(1)
                 clean_text = re.sub(r"\[ACTION:.*?\]", "", full_text).strip()
             else:
                 clean_text = full_text.strip()
