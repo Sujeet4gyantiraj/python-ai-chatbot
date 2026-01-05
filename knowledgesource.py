@@ -25,74 +25,71 @@ MAX_TOTAL_SIZE = 10 * 1024 * 1024
 # read document of different types
 
 
+import asyncio
+from typing import Callable, Any, List
+
+async def run_in_thread(func: Callable[..., Any], *args, **kwargs) -> Any:
+    return await asyncio.to_thread(func, *args, **kwargs)
+
+
 
 ALLOWED_EXTENSIONS = {
     ".pdf", ".doc", ".docx", ".xlsx", ".xls", ".csv", ".txt"
 }
 
-import aiofiles.tempfile
+
 import asyncio
 
+
+def read_pdf(content: bytes) -> str:
+    text = []
+    with fitz.open(stream=content, filetype="pdf") as pdf:
+        for page in pdf:
+            t = page.get_text("text")
+            if t:
+                text.append(t)
+    return "\n".join(text)
+
+def read_docx(content: bytes) -> str:
+    doc = docx.Document(io.BytesIO(content))
+    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+def read_excel(content: bytes) -> str:
+    excel = pd.read_excel(io.BytesIO(content), sheet_name=None)
+    text = []
+    for sheet, df in excel.items():
+        text.append(f"Sheet: {sheet}")
+        text.append(df.astype(str).fillna("").to_csv(index=False))
+    return "\n".join(text)
+
+def read_csv(content: bytes) -> str:
+    df = pd.read_csv(io.BytesIO(content))
+    return df.astype(str).fillna("").to_csv(index=False)
+
+
+
 async def read_upload_file(filename: str, content: bytes) -> str:
-    """
-    Reads different document types and returns extracted text. Now async.
-    """
-    try:
-        ext = os.path.splitext(filename)[1].lower()
+    ext = os.path.splitext(filename)[1].lower()
 
-        if ext not in ALLOWED_EXTENSIONS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported file type: {ext}"
-            )
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
 
-        # For file types that require a file path, use aiofiles.tempfile
-        if ext == ".pdf":
-            # PyMuPDF requires a file-like object or bytes, so we can use bytes directly
-            text = []
-            with fitz.open(stream=content, filetype="pdf") as pdf:
-                for page in pdf:
-                    page_text = page.get_text("text")
-                    if page_text:
-                        text.append(page_text)
-            return "\n".join(text)
+    if ext == ".pdf":
+        return await run_in_thread(read_pdf, content)
 
-        elif ext in {".doc", ".docx"}:
-            # docx.Document can use BytesIO
-            doc = docx.Document(io.BytesIO(content))
-            return "\n".join(
-                p.text for p in doc.paragraphs if p.text.strip()
-            )
+    if ext in {".doc", ".docx"}:
+        return await run_in_thread(read_docx, content)
 
-        elif ext in {".xls", ".xlsx"}:
-            # pandas can use BytesIO
-            excel = pd.read_excel(io.BytesIO(content), sheet_name=None)
-            text = []
-            for sheet_name, df in excel.items():
-                text.append(f"Sheet: {sheet_name}")
-                text.append(
-                    df.astype(str).fillna("").to_csv(
-                        index=False, header=True
-                    )
-                )
-            return "\n".join(text)
+    if ext in {".xls", ".xlsx"}:
+        return await run_in_thread(read_excel, content)
 
-        elif ext == ".csv":
-            df = pd.read_csv(io.BytesIO(content))
-            return df.astype(str).fillna("").to_csv(index=False)
+    if ext == ".csv":
+        return await run_in_thread(read_csv, content)
 
-        elif ext == ".txt":
-            # For large files, use aiofiles with a temp file
-            async with aiofiles.tempfile.NamedTemporaryFile("wb+", delete=True) as tmp:
-                await tmp.write(content)
-                await tmp.seek(0)
-                # Read as text
-                result = await tmp.read()
-                return result.decode("utf-8", errors="ignore")
+    if ext == ".txt":
+        return content.decode("utf-8", errors="ignore")
 
-        raise HTTPException(status_code=400, detail="File reading failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"File read error: {str(e)}")
+    raise HTTPException(status_code=400, detail="File reading failed")
 
 
 
@@ -122,6 +119,45 @@ def clean_chunk(text: str) -> str:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Chunk clean error: {str(e)}")
 
+
+
+async def background_embedding_job(
+    cleaned_chunks: List[str],
+    knowledge_source_id: str,
+    bot_id: str,
+    file_name: str,
+):
+    try:
+        embeddings = await embed_content_batch(cleaned_chunks)
+
+        vectors = [
+            {
+                "id": str(uuid.uuid4()),
+                "values": emb,
+                "metadata": {
+                    "sourceId": knowledge_source_id,
+                    "botId": bot_id,
+                    "fileName": file_name,
+                    "content": chunk,
+                },
+            }
+            for chunk, emb in zip(cleaned_chunks, embeddings)
+        ]
+
+        # Pinecone is blocking → thread
+        await asyncio.to_thread(
+            index.upsert,
+            vectors=vectors,
+            namespace=bot_id
+        )
+
+        print(f"[EMBEDDING DONE] {file_name} → {len(vectors)} chunks")
+
+    except Exception as e:
+        print(f"[EMBEDDING FAILED] {file_name}:", e)
+
+
+
 async def upload_knowledge(
     knowledge_source_id: str,
     bot_id: str,
@@ -129,65 +165,41 @@ async def upload_knowledge(
 ):
     total_size = 0
     results = []
-    try:
-        for file in files:
-            content = await file.read()
-            total_size += len(content)
-            if total_size > MAX_TOTAL_SIZE:
-                raise HTTPException(status_code=400, detail="Upload exceeds 10MB")
 
-            temp_path = f"/tmp/{uuid.uuid4()}_{file.filename}"
-            storage_path = f"knowledge/{bot_id}/{uuid.uuid4()}_{file.filename}"
+    for file in files:
+        content = await file.read()
+        total_size += len(content)
 
-            async with aiofiles.open(temp_path, "wb") as f:
-                await f.write(content)
+        if total_size > MAX_TOTAL_SIZE:
+            raise HTTPException(status_code=400, detail="Upload exceeds 10MB")
 
-            # Read file as text according to type (async)
-            text = await read_upload_file(file.filename, content)
+        text = await read_upload_file(file.filename, content)
+        chunks = extract_chunks_from_text(text)
 
-            # Chunk the extracted text, not the file
-            chunks = extract_chunks_from_text(text)
-            print("Extracted chunks:", len(chunks))
-
-            # Embedding and upsert (optional, keep if you want Pinecone)
-            # Use asyncio.to_thread for parallelism if needed
-            loop = asyncio.get_event_loop()
-            cleaned_chunks = await asyncio.gather(*[
-                loop.run_in_executor(None, clean_chunk, c) for c in chunks
-            ])
-            cleaned_chunks = [c.strip() for c in cleaned_chunks if c.strip()]
-            cleaned_chunks = [c[:1000] for c in cleaned_chunks if len(c) > 50]
-            embeddings = await embed_content_batch(cleaned_chunks)
-            for chunk, emb in zip(cleaned_chunks, embeddings):
-                print("Chunk:", chunk[:60], "Embedding length:", len(emb))
-            print("Embeddings received:", len(embeddings))
-            vectors = [
-                {
-                    "id": str(uuid.uuid4()),
-                    "values": emb,
-                    "metadata": {
-                        "sourceId": knowledge_source_id,
-                        "botId": bot_id,
-                        "fileName": file.filename,
-                        "content": chunk,
-                    },
-                }
-                for chunk, emb in zip(cleaned_chunks, embeddings)
-            ]
-
-            index.upsert(
-                vectors=vectors,
-                namespace=bot_id
+        cleaned_chunks = await asyncio.gather(
+            *[asyncio.to_thread(clean_chunk, c) for c in chunks]
+        )
+        cleaned_chunks = [
+            c.strip() for c in cleaned_chunks if c.strip()
+        ]
+        # FIRE AND FORGET
+        asyncio.create_task(
+            background_embedding_job(
+                cleaned_chunks,
+                knowledge_source_id,
+                bot_id,
+                file.filename
             )
+        )
 
-            os.remove(temp_path)
+        results.append({
+            "fileName": file.filename,
+            "status": "processing",
+            "chunks": len(cleaned_chunks)
+        })
 
-            results.append({
-                "fileName": file.filename,
-                "botId": bot_id
-            })
+    return {
+        "message": "Files accepted. Embedding in background.",
+        "files": results
+    }
 
-        return {"uploaded": results}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))

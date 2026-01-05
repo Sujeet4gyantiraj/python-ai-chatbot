@@ -1,40 +1,337 @@
 
-# import os
-# import json
+# # import os
+# # import json
 
 
-# import redis.asyncio as redis
+# # import redis.asyncio as redis
+
+# from intent_classification import SemanticRouteClassifier
+# from langchain_classic.memory import ConversationBufferWindowMemory
+
+# def get_memory() -> ConversationBufferWindowMemory:
+#     """
+#     Returns a ConversationBufferWindowMemory instance for storing the last 5 chat messages.
+#     Note: If you want to persist or share memory across requests, you must store/load messages by session_id.
+#     """
+#     return ConversationBufferWindowMemory(k=5, return_messages=True)
+
+
+
+# def format_prompt_for_llama3(messages: list[dict]) -> str:
+#     """
+#     Format messages for Llama 3 model prompt.
+#     """
+#     prompt = "<|begin_of_text|>"
+#     for msg in messages:
+#         prompt += (
+#             f"<|start_header_id|>{msg['role']}<|end_header_id|>\n\n"
+#             f"{msg['content']}<|eot_id|>"
+#         )
+#     prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n"
+#     return prompt
+
+
+
+# # New recommended way
+# from langchain_core.prompts import PromptTemplate
+
+# from typing import Optional, Dict
+
+
+
+
+# from typing import Optional, Dict
+
+# class ChatbotPrompts:
+#     """
+#     Modular prompt templates for different chatbot intents.
+#     Optimized for Llama 3 understanding.
+#     """
+    
+#     @staticmethod
+#     def build_qa_prompt(
+#         knowledge_base: str,
+#         question: str,
+#         custom_instruction: Optional[str] = None
+#     ) -> Dict[str, str]:
+
+#         personality = custom_instruction or (
+#             "You are a friendly, professional customer support assistant."
+#         )
+
+#         template = """TASK: QUESTION ANSWERING
+
+# You are a customer support assistant answering a question using the knowledge base below.
+
+# Rules:
+# - Use ONLY the information from the knowledge base
+# - You MAY rephrase or summarize the information
+# - Do NOT copy sentences verbatim
+# - Do NOT add external knowledge
+# - Output ONLY the final answer
+# - If the knowledge base does NOT describe the topic at all, respond with the fallback sentence EXACTLY
+
+# Fallback sentence:
+# "I'd be happy to help you with that! To give you the most accurate information, please share your contact details and one of our customer care representatives will reach out to you shortly."
+
+# BEGIN KNOWLEDGE BASE
+# ====================
+# {knowledge_base}
+# ====================
+# END KNOWLEDGE BASE
+
+# QUESTION:
+# {question}
+
+# FINAL ANSWER (one paragraph, plain text only):
+
+#     """
+
+#         return {
+#             "role": "system",
+#             "content": template.format(
+#                 personality=personality,
+#                 knowledge_base=knowledge_base or "",
+#                 question=question
+#             )
+#         }
+#     @staticmethod
+#     def build_greeting_prompt(
+#         custom_instruction: Optional[str] = None,
+#         user_message: Optional[str] = None
+#     ) -> Dict[str, str]:
+#         """
+#         Deterministic prompt for greetings and small talk.
+#         Ensures a single, clean response with no repetition.
+#         """
+#         default_personality = "You are a friendly, professional customer support assistant."
+#         personality = custom_instruction if custom_instruction else default_personality
+
+#         template = """You are a customer support assistant.
+
+#     # YOUR PERSONALITY
+#     {personality}
+
+#     # USER MESSAGE
+#     {user_message}
+
+#     # INSTRUCTIONS
+#     The user is greeting you or making small talk.
+
+#     Respond with ONE short, friendly reply (1–2 sentences).
+#     Do NOT repeat greetings.
+#     Do NOT ask multiple questions.
+#     Do NOT continue the conversation.
+#     Do NOT explain your reasoning.
+#     Stop immediately after your reply.
+
+#     Your response must contain ONLY what you would say to the user.
+#     """
+
+#         return {
+#             "role": "system",
+#             "content": template.format(
+#                 personality=personality,
+#                 user_message=user_message or ""
+#             )
+#         }
+    
+#     @staticmethod
+#     def build_agent_request_prompt(custom_instruction: Optional[str] = None) -> Dict[str, str]:
+#         """
+#         Prompt for when user wants to speak with a human agent.
+#         """
+#         default_personality = "You are a friendly, professional customer support assistant."
+#         personality = custom_instruction if custom_instruction else default_personality
+        
+#         template = """You are a customer support assistant helping transfer a user to a human agent.
+
+# # YOUR PERSONALITY
+# {personality}
+
+# # INSTRUCTIONS
+# The user wants to speak with a human agent, is frustrated, or needs help beyond what you can provide.
+
+# Acknowledge their request warmly and let them know you're connecting them with a team member.
+
+# After your brief acknowledgment, respond with ONLY this action tag on a new line:
+# [ACTION:REQUEST_AGENT]
+
+# Respond directly to the user now:"""
+
+#         return {
+#             "role": "system",
+#             "content": template.format(personality=personality)
+#         }
+    
+#     @staticmethod
+#     def build_scheduler_prompt(custom_instruction: Optional[str] = None) -> Dict[str, str]:
+#         """
+#         Prompt for when user wants to schedule a meeting/demo/call.
+#         """
+#         default_personality = "You are a friendly, professional customer support assistant."
+#         personality = custom_instruction if custom_instruction else default_personality
+        
+#         template = """You are a customer support assistant helping a user schedule a meeting.
+
+# # YOUR PERSONALITY
+# {personality}
+
+# # INSTRUCTIONS
+# The user wants to book a meeting, schedule a demo, set up a call, or request a callback.
+
+# Acknowledge their request warmly and let them know you're opening the scheduler.
+
+# After your brief acknowledgment, respond with ONLY this action tag on a new line:
+# [ACTION:SHOW_SCHEDULER]
+
+# Respond directly to the user now:"""
+
+#         return {
+#             "role": "system",
+#             "content": template.format(personality=personality)
+#         }
+
+
+
+
+
+# # Main router function
+# def build_augmented_system_instruction(
+#     user_message: str,
+#     knowledge_base: Optional[str] = None,
+#     custom_instruction: Optional[str] = None,
+#     intent: Optional[str] = None
+# ) -> Dict[str, any]:
+#     """
+#     Automatically route user message to appropriate prompt.
+    
+#     Args:
+#         user_message: The user's input text
+#         knowledge_base: Context for QA (optional)
+#         custom_instruction: Optional custom personality
+#         intent: Optional manual intent override (one of 'qa', 'greeting', 'agent_request', 'scheduler')
+    
+#     Returns:
+#         Dict with 'system_message', 'detected_intent', and 'confidence'
+#     """
+#     prompts = ChatbotPrompts()
+#     # breakpoint()
+#     router = SemanticRouteClassifier(confidence_threshold=0.60)
+    
+#     # Detect intent if not provided
+#     if intent is None:
+#         detected_intent,confidence_data,detailed = router.classify(user_message, return_scores=True)
+        
+#     else:
+#         detected_intent = intent
+    
+#     # confidence = router.get_confidence_score(user_message, detected_intent)
+#     # breakpoint()
+#     # Build appropriate prompt
+#     if detected_intent == "normal_qa":
+#         system_msg = prompts.build_qa_prompt(
+#             knowledge_base or "",
+#             user_message,
+#             custom_instruction
+#         )
+#         max_tokens =300
+
+#     elif detected_intent == "greeting":
+#         system_msg = prompts.build_greeting_prompt(custom_instruction,user_message)
+#         max_tokens =50
+#     elif detected_intent == "agent_request":
+#         system_msg = prompts.build_agent_request_prompt(custom_instruction)
+#         max_tokens =50
+#     elif detected_intent == "scheduler":
+#         system_msg = prompts.build_scheduler_prompt(custom_instruction)
+#         max_tokens =50
+#     else:
+#         raise ValueError(f"Unknown intent: {detected_intent}")
+    
+#     return {
+#         "system_message": system_msg,
+#         "detected_intent": detected_intent,
+#         "confidence": confidence_data,
+#         "max_tokens":max_tokens
+#     }
+
+
+# # Example usage:
+# """
+# # Test cases showing improved accuracy:
+
+# # 1. Greeting (short message bonus)
+# result = build_augmented_system_instruction("Hi there!")
+# # Intent: greeting, Confidence: 0.9
+
+# # 2. Frustrated user (frustration signal boost)
+# result = build_augmented_system_instruction(
+#     "This is ridiculous, I need to speak to a human agent now"
+# )
+# # Intent: agent_request, Confidence: 0.95+
+
+# # 3. Scheduler with context
+# result = build_augmented_system_instruction(
+#     "Can we schedule a demo call for next Tuesday?"
+# )
+# # Intent: scheduler, Confidence: 0.8+
+
+# # 4. False positive avoided (pricing question, not booking)
+# result = build_augmented_system_instruction(
+#     "How much does a demo cost? What are your meeting room prices?"
+# )
+# # Intent: qa (scheduler heavily penalized), Confidence: 0.75
+
+# # 5. Question detection
+# result = build_augmented_system_instruction(
+#     "What are your business hours?"
+# )
+# # Intent: qa, Confidence: 0.75
+
+# # 6. Ambiguous agent request (weak signal)
+# result = build_augmented_system_instruction(
+#     "Can I talk to someone about this?"
+# )
+# # Intent: agent_request, Confidence: 0.5-0.6
+
+# # 7. Strong scheduler signal
+# result = build_augmented_system_instruction(
+#     "I'd like to book an appointment to discuss pricing"
+# )
+# # Intent: scheduler, Confidence: 0.8+ (strong phrase overrides "pricing")
+
+# # Low confidence handling
+# result = build_augmented_system_instruction("xyz123")
+# if result['confidence'] < 0.4:
+#     # Fall back to QA or ask clarifying question
+#     print("Unclear intent, using QA default")
+
+# # With knowledge base for QA
+# result = build_augmented_system_instruction(
+#     user_message="How does your product work?",
+#     knowledge_base="Our product uses AI to automate customer support...",
+#     custom_instruction="You are AcmeCorp's support bot"
+# )
+# """
+
+
+import logging
+from typing import Optional, Dict
 
 from intent_classification import SemanticRouteClassifier
-
-# # Async Redis connection (singleton)
-# _redis_client = None
-# async def get_redis_client():
-#     global _redis_client
-#     if _redis_client is None:
-#         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-#         _redis_client = redis.from_url(redis_url, decode_responses=True)
-#     return _redis_client
-
-# # Async store and load last k messages for a session and bot
-# async def save_chat_history(bot_id: str, session_id: str, messages: list[dict], k: int = 5):
-#     r = await get_redis_client()
-#     trimmed = messages[-k:]
-#     await r.set(f"chat_history:{bot_id}:{session_id}", json.dumps(trimmed))
-
-# async def load_chat_history(bot_id: str, session_id: str, k: int = 5) -> list[dict]:
-#     r = await get_redis_client()
-#     data = await r.get(f"chat_history:{bot_id}:{session_id}")
-#     if not data:
-#         return []
-#     try:
-#         messages = json.loads(data)
-#         return messages[-k:]
-#     except Exception:
-#         return []
-
-
 from langchain_classic.memory import ConversationBufferWindowMemory
+
+# -------------------- LOGGER SETUP --------------------
+import os
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(filename)s:%(lineno)d | %(message)s"
+)
+logger = logging.getLogger(__name__)
+# ----------------------------------------------------
+
 
 def get_memory() -> ConversationBufferWindowMemory:
     """
@@ -44,45 +341,38 @@ def get_memory() -> ConversationBufferWindowMemory:
     return ConversationBufferWindowMemory(k=5, return_messages=True)
 
 
-
-def format_prompt_for_llama3(messages: list[dict]) -> str:
+def format_prompt_for_llama3(messages: list[dict], max_chars: int = 8000) -> str:
     """
     Format messages for Llama 3 model prompt.
+    Optionally truncates prompt if it exceeds max_chars.
     """
     prompt = "<|begin_of_text|>"
     for msg in messages:
+        content = msg.get("content", "")
         prompt += (
-            f"<|start_header_id|>{msg['role']}<|end_header_id|>\n\n"
-            f"{msg['content']}<|eot_id|>"
+            f"<|start_header_id|>{msg.get('role','user')}<|end_header_id|>\n\n"
+            f"{content}<|eot_id|>"
         )
+        if len(prompt) > max_chars:
+            logger.warning("Prompt truncated to max_chars=%d", max_chars)
+            break
     prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n"
     return prompt
 
 
-
-# New recommended way
-from langchain_core.prompts import PromptTemplate
-
-from typing import Optional, Dict
-
-
-
-
-from typing import Optional, Dict
-
+# -------------------- PROMPT TEMPLATES --------------------
 class ChatbotPrompts:
     """
     Modular prompt templates for different chatbot intents.
     Optimized for Llama 3 understanding.
     """
-    
+
     @staticmethod
     def build_qa_prompt(
         knowledge_base: str,
         question: str,
         custom_instruction: Optional[str] = None
     ) -> Dict[str, str]:
-
         personality = custom_instruction or (
             "You are a friendly, professional customer support assistant."
         )
@@ -112,9 +402,7 @@ QUESTION:
 {question}
 
 FINAL ANSWER (one paragraph, plain text only):
-
-    """
-
+"""
         return {
             "role": "system",
             "content": template.format(
@@ -123,39 +411,35 @@ FINAL ANSWER (one paragraph, plain text only):
                 question=question
             )
         }
+
     @staticmethod
     def build_greeting_prompt(
         custom_instruction: Optional[str] = None,
         user_message: Optional[str] = None
     ) -> Dict[str, str]:
-        """
-        Deterministic prompt for greetings and small talk.
-        Ensures a single, clean response with no repetition.
-        """
         default_personality = "You are a friendly, professional customer support assistant."
-        personality = custom_instruction if custom_instruction else default_personality
+        personality = custom_instruction or default_personality
 
         template = """You are a customer support assistant.
 
-    # YOUR PERSONALITY
-    {personality}
+# YOUR PERSONALITY
+{personality}
 
-    # USER MESSAGE
-    {user_message}
+# USER MESSAGE
+{user_message}
 
-    # INSTRUCTIONS
-    The user is greeting you or making small talk.
+# INSTRUCTIONS
+The user is greeting you or making small talk.
 
-    Respond with ONE short, friendly reply (1–2 sentences).
-    Do NOT repeat greetings.
-    Do NOT ask multiple questions.
-    Do NOT continue the conversation.
-    Do NOT explain your reasoning.
-    Stop immediately after your reply.
+Respond with ONE short, friendly reply (1–2 sentences).
+Do NOT repeat greetings.
+Do NOT ask multiple questions.
+Do NOT continue the conversation.
+Do NOT explain your reasoning.
+Stop immediately after your reply.
 
-    Your response must contain ONLY what you would say to the user.
-    """
-
+Your response must contain ONLY what you would say to the user.
+"""
         return {
             "role": "system",
             "content": template.format(
@@ -163,15 +447,12 @@ FINAL ANSWER (one paragraph, plain text only):
                 user_message=user_message or ""
             )
         }
-    
+
     @staticmethod
     def build_agent_request_prompt(custom_instruction: Optional[str] = None) -> Dict[str, str]:
-        """
-        Prompt for when user wants to speak with a human agent.
-        """
         default_personality = "You are a friendly, professional customer support assistant."
-        personality = custom_instruction if custom_instruction else default_personality
-        
+        personality = custom_instruction or default_personality
+
         template = """You are a customer support assistant helping transfer a user to a human agent.
 
 # YOUR PERSONALITY
@@ -187,19 +468,13 @@ After your brief acknowledgment, respond with ONLY this action tag on a new line
 
 Respond directly to the user now:"""
 
-        return {
-            "role": "system",
-            "content": template.format(personality=personality)
-        }
-    
+        return {"role": "system", "content": template.format(personality=personality)}
+
     @staticmethod
     def build_scheduler_prompt(custom_instruction: Optional[str] = None) -> Dict[str, str]:
-        """
-        Prompt for when user wants to schedule a meeting/demo/call.
-        """
         default_personality = "You are a friendly, professional customer support assistant."
-        personality = custom_instruction if custom_instruction else default_personality
-        
+        personality = custom_instruction or default_personality
+
         template = """You are a customer support assistant helping a user schedule a meeting.
 
 # YOUR PERSONALITY
@@ -215,16 +490,10 @@ After your brief acknowledgment, respond with ONLY this action tag on a new line
 
 Respond directly to the user now:"""
 
-        return {
-            "role": "system",
-            "content": template.format(personality=personality)
-        }
+        return {"role": "system", "content": template.format(personality=personality)}
 
 
-
-
-
-# Main router function
+# -------------------- ROUTER FUNCTION --------------------
 def build_augmented_system_instruction(
     user_message: str,
     knowledge_base: Optional[str] = None,
@@ -233,112 +502,51 @@ def build_augmented_system_instruction(
 ) -> Dict[str, any]:
     """
     Automatically route user message to appropriate prompt.
-    
-    Args:
-        user_message: The user's input text
-        knowledge_base: Context for QA (optional)
-        custom_instruction: Optional custom personality
-        intent: Optional manual intent override (one of 'qa', 'greeting', 'agent_request', 'scheduler')
-    
+
     Returns:
-        Dict with 'system_message', 'detected_intent', and 'confidence'
+        Dict with 'system_message', 'detected_intent', 'confidence', 'max_tokens'
     """
     prompts = ChatbotPrompts()
-    # breakpoint()
     router = SemanticRouteClassifier(confidence_threshold=0.60)
-    
-    # Detect intent if not provided
-    if intent is None:
-        detected_intent,confidence_data,detailed = router.classify(user_message, return_scores=True)
-        
-    else:
-        detected_intent = intent
-    
-    # confidence = router.get_confidence_score(user_message, detected_intent)
-    # breakpoint()
-    # Build appropriate prompt
-    if detected_intent == "normal_qa":
-        system_msg = prompts.build_qa_prompt(
-            knowledge_base or "",
-            user_message,
-            custom_instruction
-        )
-        max_tokens =300
 
-    elif detected_intent == "greeting":
-        system_msg = prompts.build_greeting_prompt(custom_instruction,user_message)
-        max_tokens =50
-    elif detected_intent == "agent_request":
-        system_msg = prompts.build_agent_request_prompt(custom_instruction)
-        max_tokens =50
-    elif detected_intent == "scheduler":
-        system_msg = prompts.build_scheduler_prompt(custom_instruction)
-        max_tokens =50
-    else:
-        raise ValueError(f"Unknown intent: {detected_intent}")
-    
-    return {
-        "system_message": system_msg,
-        "detected_intent": detected_intent,
-        "confidence": confidence_data,
-        "max_tokens":max_tokens
-    }
+    try:
+        if intent is None:
+            detected_intent, confidence_data, _ = router.classify(
+                user_message, return_scores=True
+            )
+        else:
+            detected_intent = intent
+            confidence_data = {detected_intent: 1.0}
 
+        logger.info("Detected intent | user_message=%s | intent=%s | confidence=%s",
+                    user_message, detected_intent, confidence_data)
 
-# Example usage:
-"""
-# Test cases showing improved accuracy:
+        # Build prompt
+        if detected_intent == "normal_qa":
+            system_msg = prompts.build_qa_prompt(
+                knowledge_base or "", user_message, custom_instruction
+            )
+            max_tokens = 300
+        elif detected_intent == "greeting":
+            system_msg = prompts.build_greeting_prompt(custom_instruction, user_message)
+            max_tokens = 50
+        elif detected_intent == "agent_request":
+            system_msg = prompts.build_agent_request_prompt(custom_instruction)
+            max_tokens = 50
+        elif detected_intent == "scheduler":
+            system_msg = prompts.build_scheduler_prompt(custom_instruction)
+            max_tokens = 50
+        else:
+            logger.error("Unknown intent detected: %s", detected_intent)
+            raise ValueError(f"Unknown intent: {detected_intent}")
 
-# 1. Greeting (short message bonus)
-result = build_augmented_system_instruction("Hi there!")
-# Intent: greeting, Confidence: 0.9
+        return {
+            "system_message": system_msg,
+            "detected_intent": detected_intent,
+            "confidence": confidence_data,
+            "max_tokens": max_tokens
+        }
 
-# 2. Frustrated user (frustration signal boost)
-result = build_augmented_system_instruction(
-    "This is ridiculous, I need to speak to a human agent now"
-)
-# Intent: agent_request, Confidence: 0.95+
-
-# 3. Scheduler with context
-result = build_augmented_system_instruction(
-    "Can we schedule a demo call for next Tuesday?"
-)
-# Intent: scheduler, Confidence: 0.8+
-
-# 4. False positive avoided (pricing question, not booking)
-result = build_augmented_system_instruction(
-    "How much does a demo cost? What are your meeting room prices?"
-)
-# Intent: qa (scheduler heavily penalized), Confidence: 0.75
-
-# 5. Question detection
-result = build_augmented_system_instruction(
-    "What are your business hours?"
-)
-# Intent: qa, Confidence: 0.75
-
-# 6. Ambiguous agent request (weak signal)
-result = build_augmented_system_instruction(
-    "Can I talk to someone about this?"
-)
-# Intent: agent_request, Confidence: 0.5-0.6
-
-# 7. Strong scheduler signal
-result = build_augmented_system_instruction(
-    "I'd like to book an appointment to discuss pricing"
-)
-# Intent: scheduler, Confidence: 0.8+ (strong phrase overrides "pricing")
-
-# Low confidence handling
-result = build_augmented_system_instruction("xyz123")
-if result['confidence'] < 0.4:
-    # Fall back to QA or ask clarifying question
-    print("Unclear intent, using QA default")
-
-# With knowledge base for QA
-result = build_augmented_system_instruction(
-    user_message="How does your product work?",
-    knowledge_base="Our product uses AI to automate customer support...",
-    custom_instruction="You are AcmeCorp's support bot"
-)
-"""
+    except Exception as e:
+        logger.exception("Failed to build system instruction")
+        raise e
