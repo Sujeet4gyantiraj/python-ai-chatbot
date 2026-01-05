@@ -473,33 +473,6 @@ if __name__ == "__main__":
     print("=" * 90)
     print("CLASSIFICATION RESULTS (Using TF-IDF, Patterns, Keywords, N-grams)")
     print("=" * 90)
-    
-    # for query in test_queries:
-    #     route, confidence, detailed = classifier.classify(query, return_scores=True)
-        
-    #     print(f"\nQuery: '{query}'")
-    #     print(f"→ Route: {route.upper()}")
-    #     print(f"→ Confidence: {confidence:.2%}")
-        
-    #     # Show top 3 scores for comparison
-    #     sorted_routes = sorted(detailed.items(), key=lambda x: x[1]['ensemble'], reverse=True)
-    #     print(f"→ Top 3 Routes:")
-    #     for i, (r_name, r_scores) in enumerate(sorted_routes[:3], 1):
-    #         marker = "★" if r_name == route else " "
-    #         print(f"   {marker} {i}. {r_name:15} → {r_scores['ensemble']:.2%} "
-    #               f"(TF-IDF: {r_scores['tfidf']:.3f}, Pattern: {r_scores['pattern']:.3f}, "
-    #               f"Keyword: {r_scores['keyword']:.3f})")
-    #     print("-" * 90)
-    
-    # # Batch processing demo
-    # print("\n" + "=" * 90)
-    # print("BATCH PROCESSING DEMO")
-    # print("=" * 90)
-    # batch_queries = ["hi", "I need an agent", "book appointment", "what's the price?"]
-    # batch_results = classifier.batch_classify(batch_queries)
-    # for query, (route, conf) in zip(batch_queries, batch_results):
-    #     print(f"{query:30} → {route:15} (confidence: {conf:.2%})")
-
 
     import re
 from typing import Dict, List, Tuple, Set
