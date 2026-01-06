@@ -12,6 +12,7 @@ import asyncio
 import os
 from dotenv import load_dotenv
 from pinecone import Pinecone
+from llm import generate_chat_response_qwen
 from utils.prompt_builder import (
     build_augmented_system_instruction,
     format_prompt_for_llama3,
@@ -40,7 +41,7 @@ pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX")
 pinecone_index = pc.Index(PINECONE_INDEX_NAME)
 
-GENAI_API_BASE_URL = "https://aibot14.studyineurope.xyz/genaiapi"
+GENAI_API_BASE_URL = os.getenv('GENAI_API_BASE_URL')
 EMBEDDING_DIM = 768
 
 
@@ -77,6 +78,21 @@ async def generate_embedding(
 embed_query = generate_embedding
 
 
+
+def clean_llm_output(text: str) -> str:
+    # Remove any [ACTION:...] blocks
+    text = re.sub(r"\[ACTION:.*?\]", "", text, flags=re.DOTALL)
+
+    # Stop at markers like #, END RESPONSE, END CONVERSATION, etc.
+    text = re.split(
+        r"#|END CONVERSATION|END RESPONSE|END SESSION",
+        text,
+        maxsplit=1
+    )[0]
+
+    return text.strip()
+
+
 # ------------------------------------------------------------------
 # Chat Generation API
 # ------------------------------------------------------------------
@@ -103,14 +119,15 @@ async def generate_chat_response(
                     "max_tokens": max_tokens,
                     "temperature": temperature,
                     "top_p": top_p,
+                    # "repetition_penalty":1.05,
                     "stop": [
                         "END",
                         "BEGIN KNOWLEDGE BASE",
                         "END KNOWLEDGE BASE",
                         "====================",
                         "QUESTION:",
-                        "TASK:",
-                        "\n\n"
+                        "TASK:"
+                       
                     ]
                 },
             )
@@ -222,7 +239,7 @@ async def generate_and_stream_ai_response(
                 logger.debug("Pinecone raw response: %s", pinecone_response)
 
                 SIMILARITY_THRESHOLD = 0.55
-
+                # breakpoint()
                 if pinecone_response and pinecone_response.matches:
                     knowledge_base = "\n\n---\n\n".join(
                         match["metadata"]["content"]
@@ -268,11 +285,8 @@ async def generate_and_stream_ai_response(
             )
 
             # ---------------- POST PROCESS ----------------
-            match = re.search(r"\[ACTION:(.*?)\]", full_text)
-            clean_text = (
-                re.sub(r"\[ACTION:.*?\]", "", full_text).strip()
-                if match else full_text.strip()
-            )
+            clean_text = clean_llm_output(full_text)
+            # breakpoint()
 
             if action == "greeting":
                 clean_text = extract_before_hash(clean_text)
@@ -297,3 +311,7 @@ async def generate_and_stream_ai_response(
     except Exception:
         logger.exception("GENAI outer error")
         return {"fullText": "", "cleanText": "", "action": None}
+    
+
+
+

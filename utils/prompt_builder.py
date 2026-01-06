@@ -4,6 +4,10 @@ from typing import Optional, Dict
 from intent_classification import SemanticRouteClassifier
 from langchain_classic.memory import ConversationBufferWindowMemory
 
+from intent_classification import get_hybrid_classifier
+
+
+
 # -------------------- LOGGER SETUP --------------------
 import os
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -40,6 +44,7 @@ def format_prompt_for_llama3(messages: list[dict], max_chars: int = 8000) -> str
             break
     prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n"
     return prompt
+
 
 
 # -------------------- PROMPT TEMPLATES --------------------
@@ -189,7 +194,7 @@ def build_augmented_system_instruction(
         Dict with 'system_message', 'detected_intent', 'confidence', 'max_tokens'
     """
     prompts = ChatbotPrompts()
-    router = SemanticRouteClassifier(confidence_threshold=0.60)
+    router = get_hybrid_classifier()  # Use hybrid classifier
 
     try:
         if intent is None:
@@ -199,7 +204,10 @@ def build_augmented_system_instruction(
         else:
             detected_intent = intent
             confidence_data = {detected_intent: 1.0}
+        if detected_intent != "normal_qa" and confidence_data < 0.5:
+            detected_intent = "normal_qa"
 
+       
         logger.info("Detected intent | user_message=%s | intent=%s | confidence=%s",
                     user_message, detected_intent, confidence_data)
 
