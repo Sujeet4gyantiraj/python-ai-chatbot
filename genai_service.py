@@ -12,7 +12,7 @@ import asyncio
 import os
 from dotenv import load_dotenv
 from pinecone import Pinecone
-from llm import generate_chat_response_qwen
+# from llm import generate_chat_response_qwen
 from utils.prompt_builder import (
     build_augmented_system_instruction,
     format_prompt_for_llama3,
@@ -171,7 +171,7 @@ async def generate_chat_response(
             raise
 
         except Exception as e:
-            logger.exception("Unexpected GENAI error")
+            logger.exception("Unexpected GENAI error") 
             return (
                 "An unexpected error occurred. "
                 "Please request human assistance."
@@ -224,35 +224,52 @@ async def generate_and_stream_ai_response(
         try:
             # ---------------- RAG ----------------
             knowledge_base = ""
-
+          
             if not ai_node_data or not ai_node_data.get("disableKnowledgeBase"):
                 query_embedding = await embed_query(user_query)
                 logger.debug("Pinecone query embedding generated")
-
-                pinecone_response = pinecone_index.query(
+                res = pinecone_index.query(
                     vector=query_embedding,
                     top_k=5,
                     include_metadata=True,
                     namespace=bot_id
                 )
 
-                logger.debug("Pinecone raw response: %s", pinecone_response)
+                logger.debug("Pinecone raw response: %s", res)
 
                 SIMILARITY_THRESHOLD = 0.55
-                # breakpoint()
-                if pinecone_response and pinecone_response.matches:
-                    knowledge_base = "\n\n---\n\n".join(
-                        match["metadata"]["content"]
-                        for match in pinecone_response["matches"]
-                        if (
-                            match.get("metadata")
-                            and match["metadata"].get("content")
-                            and match.get("score", 0) >= SIMILARITY_THRESHOLD
-                        )
-                    )
+                # Handle both dict and Pinecone SDK response objects
+                matches: list = []
+                try:
+                    if isinstance(res, dict):
+                        matches = res.get("matches", []) or []
+                    elif hasattr(res, "matches"):
+                        matches = list(getattr(res, "matches") or [])
+                    elif hasattr(res, "to_dict"):
+                        d = res.to_dict()
+                        if isinstance(d, dict):
+                            matches = d.get("matches", []) or []
+                except Exception:
+                    matches = []
+
+                if matches:
+                    filtered_contents = []
+                    for m in matches:
+                        if isinstance(m, dict):
+                            md = m.get("metadata", {}) or {}
+                            content = md.get("content") if isinstance(md, dict) else None
+                            score = m.get("score", 0.0) or 0.0
+                        else:
+                            md = getattr(m, "metadata", {}) or {}
+                            content = (md.get("content") if isinstance(md, dict) else None)
+                            score = getattr(m, "score", 0.0) or 0.0
+                        if content and score >= SIMILARITY_THRESHOLD:
+                            filtered_contents.append(content)
+
+                    if filtered_contents:
+                        knowledge_base = "\n\n---\n\n".join(filtered_contents)
 
                 logger.debug("Knowledge base size=%d chars", len(knowledge_base))
-
             # ---------------- PROMPT ----------------
             history = await load_chat_history(bot_id, session_id, k=10)
             prompt_dict = build_augmented_system_instruction(
@@ -260,7 +277,7 @@ async def generate_and_stream_ai_response(
                 knowledge_base,
                 custom_instruction=""
             )
-
+            breakpoint()
             system_prompt = prompt_dict["system_message"]["content"]
             max_tokens = prompt_dict.get("max_tokens", 300)
             action = prompt_dict.get("detected_intent")

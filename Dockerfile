@@ -8,6 +8,9 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     build-essential \
     libpq-dev \
+    libxml2-dev \
+    libxslt-dev \
+    libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install
@@ -21,7 +24,10 @@ COPY . .
 EXPOSE 8000
 
 # Set environment variables (override in production!)
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    REDIS_URL=redis://redis:6379/0 \
+    LOG_LEVEL=INFO
 
 # Run the app
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

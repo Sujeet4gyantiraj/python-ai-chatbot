@@ -1,0 +1,54 @@
+# Exclude VCS
+.git
+.gitignore
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.whl
+*.egg-info/
+
+# Environments
+.env
+.env.*
+.venv/
+venv/
+env/
+
+# Logs & temp
+*.log
+logs/
+.tmp/
+tmp/
+
+# Build artifacts
+build/
+dist/
+.cache/
+
+# Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# Node
+node_modules/
+
+# Large local data/models (uploaded at runtime, not needed in image)
+data/
+datasets/
+models/
+artifacts/
+downloads/
+
+# Common binary assets (avoid shipping large files in image)
+*.pdf
+*.xlsx
+*.xls
+*.csv
+*.doc
+*.docx
+*.zip
+*.tar
+*.tar.gz
