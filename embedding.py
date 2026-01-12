@@ -45,8 +45,30 @@ async def embed_content_batch(chunks: List[str]) -> List[List[float]]:
                     raise RuntimeError(error_text)
 
                 data = await resp.json()
-                logger.debug("Embedding received | vector_size=%d", len(data.get("embedding", [])))
-                return data["embedding"]
+                emb = data.get("embedding")
+
+                # Normalize common embedding response shapes to flat list[float]
+                # Examples this handles:
+                # - {"embedding": {"values": [...]}}
+                # - {"embedding": [[...]]}
+                # - {"embedding": [...]}
+                if isinstance(emb, dict) and "values" in emb:
+                    emb = emb["values"]
+                if isinstance(emb, list) and emb and isinstance(emb[0], list):
+                    emb = emb[0]
+
+                if not isinstance(emb, list):
+                    raise RuntimeError("Embedding API returned invalid format")
+
+                # Ensure list[float]
+                try:
+                    emb = [float(x) for x in emb]
+                except Exception as e:
+                    logger.error("Failed to cast embedding values to float: %s", e)
+                    raise RuntimeError("Embedding values are not numeric")
+
+                logger.debug("Embedding received | vector_size=%d", len(emb))
+                return emb
 
         try:
             result = await asyncio.gather(

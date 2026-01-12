@@ -71,8 +71,26 @@ async def generate_embedding(
             raise Exception("Embedding API failed")
 
         data = res.json()
-        logger.debug("Embedding generated successfully")
-        return data["embedding"]
+        emb = data.get("embedding")
+
+        # Normalize to flat list[float] for Pinecone and downstream usage
+        if isinstance(emb, dict) and "values" in emb:
+            emb = emb["values"]
+        if isinstance(emb, list) and emb and isinstance(emb[0], list):
+            emb = emb[0]
+
+        if not isinstance(emb, list):
+            logger.error("Embedding API returned invalid format: %s", type(emb))
+            raise Exception("Embedding API returned invalid format")
+
+        try:
+            emb = [float(x) for x in emb]
+        except Exception as e:
+            logger.error("Failed to cast embedding values to float: %s", e)
+            raise Exception("Embedding values are not numeric")
+
+        logger.debug("Embedding generated successfully | dim=%d", len(emb))
+        return emb
 
 
 embed_query = generate_embedding
