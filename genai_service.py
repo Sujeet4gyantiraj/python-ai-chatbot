@@ -295,7 +295,6 @@ async def generate_and_stream_ai_response(
                 knowledge_base,
                 custom_instruction=""
             )
-            breakpoint()
             system_prompt = prompt_dict["system_message"]["content"]
             max_tokens = prompt_dict.get("max_tokens", 300)
             action = prompt_dict.get("detected_intent")
