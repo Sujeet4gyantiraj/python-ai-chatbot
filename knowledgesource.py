@@ -127,34 +127,30 @@ async def background_embedding_job(
     bot_id: str,
     file_name: str,
 ):
-    try:
-        embeddings = await embed_content_batch(cleaned_chunks)
+    embeddings = await embed_content_batch(cleaned_chunks)
 
-        vectors = [
-            {
-                "id": str(uuid.uuid4()),
-                "values": emb,
-                "metadata": {
-                    "sourceId": knowledge_source_id,
-                    "botId": bot_id,
-                    "fileName": file_name,
-                    "content": chunk,
-                },
-            }
-            for chunk, emb in zip(cleaned_chunks, embeddings)
-        ]
+    vectors = [
+        {
+            "id": str(uuid.uuid4()),
+            "values": emb,
+            "metadata": {
+                "sourceId": knowledge_source_id,
+                "botId": bot_id,
+                "fileName": file_name,
+                "content": chunk,
+            },
+        }
+        for chunk, emb in zip(cleaned_chunks, embeddings)
+    ]
 
-        # Pinecone is blocking → thread
-        await asyncio.to_thread(
-            index.upsert,
-            vectors=vectors,
-            namespace=bot_id
-        )
+    # Pinecone is blocking → run in thread to avoid blocking event loop
+    await asyncio.to_thread(
+        index.upsert,
+        vectors=vectors,
+        namespace=bot_id
+    )
 
-        print(f"[EMBEDDING DONE] {file_name} → {len(vectors)} chunks")
-
-    except Exception as e:
-        print(f"[EMBEDDING FAILED] {file_name}:", e)
+    print(f"[EMBEDDING DONE] {file_name} → {len(vectors)} chunks")
 
 
 
@@ -165,6 +161,7 @@ async def upload_knowledge(
 ):
     total_size = 0
     results = []
+    tasks: list[asyncio.Future] = []
 
     for file in files:
         content = await file.read()
@@ -182,24 +179,29 @@ async def upload_knowledge(
         cleaned_chunks = [
             c.strip() for c in cleaned_chunks if c.strip()
         ]
-        # FIRE AND FORGET
-        asyncio.create_task(
+
+        # Queue embedding + Pinecone upsert; all tasks awaited after loop
+        tasks.append(
             background_embedding_job(
                 cleaned_chunks,
                 knowledge_source_id,
                 bot_id,
-                file.filename
+                file.filename,
             )
         )
 
         results.append({
             "fileName": file.filename,
-            "status": "processing",
+            "status": "completed",
             "chunks": len(cleaned_chunks)
         })
 
+    # Run all embedding jobs concurrently and wait for completion
+    if tasks:
+        await asyncio.gather(*tasks)
+
     return {
-        "message": "Files accepted. Embedding in background.",
+        "message": "Files uploaded and embedded successfully.",
         "files": results
     }
 

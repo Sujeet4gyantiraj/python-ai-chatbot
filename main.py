@@ -1,21 +1,19 @@
 import os
 import logging
-from fastapi import HTTPException
 from dotenv import load_dotenv
-from fastapi import UploadFile, HTTPException
 from fastapi import (
     FastAPI,
     UploadFile,
     File,
-    Depends,
     HTTPException,
     APIRouter,
+    status,
 )
 from fastapi.responses import JSONResponse
+
 from knowledgesource import upload_knowledge
-from fastapi import status
 from pinecone_client import index
-from genai_service import generate_and_stream_ai_response
+from genai_service import generate_and_stream_ai_response, get_models_health
 from models import GenerateAIRequest
 
 
@@ -39,7 +37,18 @@ app = FastAPI(title="RAG API", version="1.0", root_path="/ragai")
 router = APIRouter()
 
 
-GENAI_API_BASE_URL = os.getenv("GENAI_API_BASE_URL")
+@app.get("/health/genai")
+def genai_health_check():
+    """Health check for local LLM and embedding models."""
+    try:
+        status_payload = get_models_health()
+        return {
+            "status": "ok",
+            "models": status_payload,
+        }
+    except Exception as e:
+        logger.exception("GenAI health check failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # -------------------- UPLOAD KNOWLEDGE ENDPOINT --------------------

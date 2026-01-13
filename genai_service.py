@@ -3,16 +3,15 @@
 # FastAPI GenAI service using Pinecone for RAG (logic unchanged)
 
 import logging
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import re
-import httpx
 import asyncio
 import os
+
 from dotenv import load_dotenv
 from pinecone import Pinecone
-# from llm import generate_chat_response_qwen
+
+from genai_core import EmbeddingService, LLMService
 from utils.prompt_builder import (
     build_augmented_system_instruction,
     format_prompt_for_llama3,
@@ -41,8 +40,28 @@ pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX")
 pinecone_index = pc.Index(PINECONE_INDEX_NAME)
 
-GENAI_API_BASE_URL = os.getenv('GENAI_API_BASE_URL')
 EMBEDDING_DIM = 768
+
+# Local model services (loaded once per process)
+_embedding_service = EmbeddingService()
+_llm_service = LLMService()
+
+
+def get_models_health() -> Dict[str, Any]:
+    """Return a lightweight health summary for local LLM and embedding models."""
+    status: Dict[str, Any] = {
+        "llm": {
+            "loaded": _llm_service is not None,
+            "class": type(_llm_service).__name__ if _llm_service is not None else None,
+        },
+        "embedding": {
+            "loaded": _embedding_service is not None,
+            "class": type(_embedding_service).__name__ if _embedding_service is not None else None,
+            "device": getattr(_embedding_service, "device", None) if _embedding_service is not None else None,
+        },
+    }
+
+    return status
 
 
 # ------------------------------------------------------------------
@@ -55,42 +74,28 @@ async def generate_embedding(
     if not text or len(text.strip()) < 3:
         logger.warning("Embedding skipped due to short/empty text")
         return [0.0] * EMBEDDING_DIM
+    loop = asyncio.get_running_loop()
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        res = await client.post(
-            f"{GENAI_API_BASE_URL}/embed/",
-            json={"text": text, "task_type": task_type}
-        )
+    def _run_embedding() -> List[float]:
+        emb = _embedding_service.generate(text=text, task_type=task_type)
 
-        if res.status_code != 200:
-            logger.error(
-                "Embedding API failed | status=%s | response=%s",
-                res.status_code,
-                res.text
-            )
-            raise Exception("Embedding API failed")
-
-        data = res.json()
-        emb = data.get("embedding")
-
-        # Normalize to flat list[float] for Pinecone and downstream usage
-        if isinstance(emb, dict) and "values" in emb:
-            emb = emb["values"]
         if isinstance(emb, list) and emb and isinstance(emb[0], list):
-            emb = emb[0]
+            emb_flat = emb[0]
+        else:
+            emb_flat = emb
 
-        if not isinstance(emb, list):
-            logger.error("Embedding API returned invalid format: %s", type(emb))
-            raise Exception("Embedding API returned invalid format")
+        if not isinstance(emb_flat, list):
+            raise TypeError("EmbeddingService returned invalid format")
 
-        try:
-            emb = [float(x) for x in emb]
-        except Exception as e:
-            logger.error("Failed to cast embedding values to float: %s", e)
-            raise Exception("Embedding values are not numeric")
+        return [float(x) for x in emb_flat]
 
+    try:
+        emb = await loop.run_in_executor(None, _run_embedding)
         logger.debug("Embedding generated successfully | dim=%d", len(emb))
         return emb
+    except Exception:
+        logger.exception("Local embedding generation failed")
+        raise
 
 
 embed_query = generate_embedding
@@ -120,80 +125,43 @@ async def generate_chat_response(
     temperature: float = 0.1,
     top_p: float = 0.9,
 ) -> str:
+    loop = asyncio.get_running_loop()
 
-    timeout = httpx.Timeout(
-        connect=10.0,
-        read=90.0,
-        write=10.0,
-        pool=10.0
-    )
-
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    def _run_llm() -> str:
         try:
-            res = await client.post(
-                f"{GENAI_API_BASE_URL}/generate/",
-                json={
-                    "prompt": prompt,
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                    "top_p": top_p,
-                    # "repetition_penalty":1.05,
-                    "stop": [
-                        "END",
-                        "BEGIN KNOWLEDGE BASE",
-                        "END KNOWLEDGE BASE",
-                        "====================",
-                        "QUESTION:",
-                        "TASK:"
-                       
-                    ]
-                },
+            result = _llm_service.generate(
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
             )
-
-            if res.status_code != 200:
-                logger.error(
-                    "GENAI HTTP error | status=%s | body=%s",
-                    res.status_code,
-                    res.text
-                )
-                return (
-                    "I'm sorry, I'm having trouble generating a response right now. "
-                    "Please try again."
-                )
-
-            data = res.json()
-
-            if data.get("error"):
-                if data.get("safety") and "unsafe" in data["safety"]:
-                    logger.warning("Safety violation detected by model")
-                    return "I cannot respond to that request as it violates safety policies."
-
-                logger.error("GENAI model error: %s", data)
-                return (
-                    "I'm sorry, I couldn't generate a response. "
-                    "Please request human assistance."
-                )
-
-            logger.debug("LLM response generated successfully")
-            return data.get("generated_text", "").strip()
-
-        except httpx.ReadTimeout:
-            logger.error("GENAI Read timeout from LLM")
-            return (
-                "The response is taking longer than expected. "
-                "Please try again in a moment."
-            )
-
-        except asyncio.CancelledError:
-            logger.warning("Request cancelled")
+        except Exception as e:
+            logger.error("Local LLM error: %s", e)
             raise
 
-        except Exception as e:
-            logger.exception("Unexpected GENAI error") 
+        text = (result or {}).get("generated_text", "")
+        return text.strip()
+
+    try:
+        response_text = await loop.run_in_executor(None, _run_llm)
+        if not response_text:
             return (
-                "An unexpected error occurred. "
+                "I'm sorry, I couldn't generate a response. "
                 "Please request human assistance."
             )
+
+        logger.debug("LLM response generated successfully")
+        return response_text
+
+    except asyncio.CancelledError:
+        logger.warning("Request cancelled")
+        raise
+    except Exception:
+        logger.exception("Unexpected local LLM error")
+        return (
+            "An unexpected error occurred. "
+            "Please request human assistance."
+        )
 
 
 # ------------------------------------------------------------------

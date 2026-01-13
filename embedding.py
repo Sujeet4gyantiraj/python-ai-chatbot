@@ -1,9 +1,9 @@
 import asyncio
-import aiohttp
 import os
 import logging
 from typing import List
-from fastapi import HTTPException
+
+from genai_core import EmbeddingService
 
 
 # -------------------- LOGGER SETUP --------------------
@@ -18,67 +18,47 @@ logger = logging.getLogger(__name__)
 # ----------------------------------------------------
 
 
-GENAI_API_BASE_URL = os.getenv("GENAI_API_BASE_URL")
+_embedding_service = EmbeddingService()
 
 
 async def embed_content_batch(chunks: List[str]) -> List[List[float]]:
-    timeout = aiohttp.ClientTimeout(total=60)
-
     logger.info("Embedding batch started | chunks=%d", len(chunks))
 
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    if not chunks:
+        return []
 
-        async def fetch_embedding(chunk: str):
-            logger.debug("Embedding chunk | length=%d", len(chunk))
+    loop = asyncio.get_running_loop()
+    BATCH_SIZE = 16
 
-            async with session.post(
-                f"{GENAI_API_BASE_URL}/embed/",
-                json={"text": chunk, "task_type": "search_document"},
-            ) as resp:
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    logger.error(
-                        "Embedding API failed | status=%s | response=%s",
-                        resp.status,
-                        error_text,
-                    )
-                    raise RuntimeError(error_text)
+    def _run_batch(batch_chunks: List[str]) -> List[List[float]]:
+        emb = _embedding_service.generate(text=batch_chunks, task_type="search_document")
 
-                data = await resp.json()
-                emb = data.get("embedding")
+        # EmbeddingService returns list[list[float]] for batched input
+        if not isinstance(emb, list):
+            raise RuntimeError("EmbeddingService returned invalid format")
 
-                # Normalize common embedding response shapes to flat list[float]
-                # Examples this handles:
-                # - {"embedding": {"values": [...]}}
-                # - {"embedding": [[...]]}
-                # - {"embedding": [...]}
-                if isinstance(emb, dict) and "values" in emb:
-                    emb = emb["values"]
-                if isinstance(emb, list) and emb and isinstance(emb[0], list):
-                    emb = emb[0]
+        if emb and not isinstance(emb[0], list):
+            # Single embedding returned for some reason
+            emb = [emb]
 
-                if not isinstance(emb, list):
-                    raise RuntimeError("Embedding API returned invalid format")
+        return [[float(x) for x in row] for row in emb]
 
-                # Ensure list[float]
-                try:
-                    emb = [float(x) for x in emb]
-                except Exception as e:
-                    logger.error("Failed to cast embedding values to float: %s", e)
-                    raise RuntimeError("Embedding values are not numeric")
+    try:
+        tasks = []
+        for i in range(0, len(chunks), BATCH_SIZE):
+            batch = chunks[i:i + BATCH_SIZE]
+            tasks.append(loop.run_in_executor(None, _run_batch, batch))
 
-                logger.debug("Embedding received | vector_size=%d", len(emb))
-                return emb
+        all_results: List[List[float]] = []
+        if tasks:
+            batch_results = await asyncio.gather(*tasks, return_exceptions=False)
+            for br in batch_results:
+                all_results.extend(br)
 
-        try:
-            result = await asyncio.gather(
-                *[fetch_embedding(chunk) for chunk in chunks],
-                return_exceptions=False
-            )
-            logger.info("Embedding batch completed successfully | chunks=%d", len(chunks))
-            return result
+        logger.info("Embedding batch completed successfully | chunks=%d", len(chunks))
+        return all_results
 
-        except Exception as e:
-            logger.exception("Embedding batch failed")
-            raise
+    except Exception:
+        logger.exception("Embedding batch failed")
+        raise
 

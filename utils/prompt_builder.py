@@ -73,7 +73,7 @@ Rules:
 - You MAY rephrase or summarize the information
 - Do NOT copy sentences verbatim
 - Do NOT add external knowledge
-- Output ONLY the final answer
+    - Output ONLY the final answer
 - If the knowledge base does NOT describe the topic at all, respond with the fallback sentence EXACTLY
 
 Fallback sentence:
@@ -88,7 +88,10 @@ END KNOWLEDGE BASE
 QUESTION:
 {question}
 
-FINAL ANSWER (one paragraph, plain text only):
+FINAL ANSWER:
+- Explain clearly in 3-6 sentences.
+- If the query is short, still give a detailed explanation, not just one short sentence.
+- Use plain text only.
 """
         return {
             "role": "system",
@@ -216,7 +219,7 @@ def build_augmented_system_instruction(
             system_msg = prompts.build_qa_prompt(
                 knowledge_base or "", user_message, custom_instruction
             )
-            max_tokens = 300
+            max_tokens = 600
         elif detected_intent == "greeting":
             system_msg = prompts.build_greeting_prompt(custom_instruction, user_message)
             max_tokens = 50
