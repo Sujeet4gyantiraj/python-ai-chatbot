@@ -1,12 +1,255 @@
+# import logging
+# from typing import Optional, Dict
+
+# from intent_classification import SemanticRouteClassifier
+# from langchain_classic.memory import ConversationBufferWindowMemory
+
+# from intent_classification import get_hybrid_classifier
+
+
+
+# # -------------------- LOGGER SETUP --------------------
+# import os
+# LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+# logging.basicConfig(
+#     level=LOG_LEVEL,
+#     format="%(asctime)s | %(levelname)s | %(name)s | %(filename)s:%(lineno)d | %(message)s"
+# )
+# logger = logging.getLogger(__name__)
+# # ----------------------------------------------------
+
+
+# def get_memory() -> ConversationBufferWindowMemory:
+#     """
+#     Returns a ConversationBufferWindowMemory instance for storing the last 5 chat messages.
+#     Note: If you want to persist or share memory across requests, you must store/load messages by session_id.
+#     """
+#     return ConversationBufferWindowMemory(k=5, return_messages=True)
+
+
+# def format_prompt_for_llama3(messages: list[dict], max_chars: int = 8000) -> str:
+#     """
+#     Format messages for Llama 3 model prompt.
+#     Optionally truncates prompt if it exceeds max_chars.
+#     """
+#     prompt = "<|begin_of_text|>"
+#     for msg in messages:
+#         content = msg.get("content", "")
+#         prompt += (
+#             f"<|start_header_id|>{msg.get('role','user')}<|end_header_id|>\n\n"
+#             f"{content}<|eot_id|>"
+#         )
+#         if len(prompt) > max_chars:
+#             logger.warning("Prompt truncated to max_chars=%d", max_chars)
+#             break
+#     prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n"
+#     return prompt
+
+
+
+# # -------------------- PROMPT TEMPLATES --------------------
+# class ChatbotPrompts:
+#     """
+#     Modular prompt templates for different chatbot intents.
+#     Optimized for Llama 3 understanding.
+#     """
+
+#     @staticmethod
+#     def build_qa_prompt(
+#         knowledge_base: str,
+#         question: str,
+#         custom_instruction: Optional[str] = None
+#     ) -> Dict[str, str]:
+#         personality = custom_instruction or (
+#             "You are a friendly, professional customer support assistant."
+#         )
+
+#         template = """TASK: QUESTION ANSWERING
+
+# You are a customer support assistant answering a question using the knowledge base below.
+
+# Rules:
+# - Use ONLY the information from the knowledge base
+# - You MAY rephrase or summarize the information
+# - Do NOT copy sentences verbatim
+# - Do NOT add external knowledge
+#     - Output ONLY the final answer
+# - If the knowledge base does NOT describe the topic at all, respond with the fallback sentence EXACTLY
+
+# Fallback sentence:
+# "I'd be happy to help you with that! To give you the most accurate information, please share your contact details and one of our customer care representatives will reach out to you shortly."
+
+# BEGIN KNOWLEDGE BASE
+# ====================
+# {knowledge_base}
+# ====================
+# END KNOWLEDGE BASE
+
+# QUESTION:
+# {question}
+
+# FINAL ANSWER:
+# - Explain clearly in 3-6 sentences.
+# - If the query is short, still give a detailed explanation, not just one short sentence.
+# - Use plain text only.
+# """
+#         return {
+#             "role": "system",
+#             "content": template.format(
+#                 personality=personality,
+#                 knowledge_base=knowledge_base or "",
+#                 question=question
+#             )
+#         }
+
+#     @staticmethod
+#     def build_greeting_prompt(
+#         custom_instruction: Optional[str] = None,
+#         user_message: Optional[str] = None
+#     ) -> Dict[str, str]:
+#         default_personality = "You are a friendly, professional customer support assistant."
+#         personality = custom_instruction or default_personality
+
+#         template = """You are a customer support assistant.
+
+# # YOUR PERSONALITY
+# {personality}
+
+# # USER MESSAGE
+# {user_message}
+
+# # INSTRUCTIONS
+# The user is greeting you or making small talk.
+
+# Respond with ONE short, friendly reply (1–2 sentences).
+# Do NOT repeat greetings.
+# Do NOT ask multiple questions.
+# Do NOT continue the conversation.
+# Do NOT explain your reasoning.
+# Stop immediately after your reply.
+
+# Your response must contain ONLY what you would say to the user.
+# """
+#         return {
+#             "role": "system",
+#             "content": template.format(
+#                 personality=personality,
+#                 user_message=user_message or ""
+#             )
+#         }
+
+#     @staticmethod
+#     def build_agent_request_prompt(custom_instruction: Optional[str] = None) -> Dict[str, str]:
+#         default_personality = "You are a friendly, professional customer support assistant."
+#         personality = custom_instruction or default_personality
+
+#         template = """You are a customer support assistant helping transfer a user to a human agent.
+
+# # YOUR PERSONALITY
+# {personality}
+
+# # INSTRUCTIONS
+# The user wants to speak with a human agent, is frustrated, or needs help beyond what you can provide.
+
+# Acknowledge their request warmly and let them know you're connecting them with a team member.
+
+# After your brief acknowledgment, respond with ONLY this action tag on a new line:
+# [ACTION:REQUEST_AGENT]
+
+# Respond directly to the user now:"""
+
+#         return {"role": "system", "content": template.format(personality=personality)}
+
+#     @staticmethod
+#     def build_scheduler_prompt(custom_instruction: Optional[str] = None) -> Dict[str, str]:
+#         default_personality = "You are a friendly, professional customer support assistant."
+#         personality = custom_instruction or default_personality
+
+#         template = """You are a customer support assistant helping a user schedule a meeting.
+
+# # YOUR PERSONALITY
+# {personality}
+
+# # INSTRUCTIONS
+# The user wants to book a meeting, schedule a demo, set up a call, or request a callback.
+
+# Acknowledge their request warmly and let them know you're opening the scheduler.
+
+# After your brief acknowledgment, respond with ONLY this action tag on a new line:
+# [ACTION:SHOW_SCHEDULER]
+
+# Respond directly to the user now:"""
+
+#         return {"role": "system", "content": template.format(personality=personality)}
+
+
+
+# # -------------------- ROUTER FUNCTION --------------------
+# def build_augmented_system_instruction(
+#     user_message: str,
+#     knowledge_base: Optional[str] = None,
+#     custom_instruction: Optional[str] = None,
+#     intent: Optional[str] = None
+# ) -> Dict[str, any]:
+#     """
+#     Automatically route user message to appropriate prompt.
+
+#     Returns:
+#         Dict with 'system_message', 'detected_intent', 'confidence', 'max_tokens'
+#     """
+#     prompts = ChatbotPrompts()
+#     router = get_hybrid_classifier()  # Use hybrid classifier
+
+#     try:
+#         if intent is None:
+#             detected_intent, confidence_data, _ = router.classify(
+#                 user_message, return_scores=True
+#             )
+#         else:
+#             detected_intent = intent
+#             confidence_data = {detected_intent: 1.0}
+#         if detected_intent != "normal_qa" and confidence_data < 0.5:
+#             detected_intent = "normal_qa"
+
+       
+#         logger.info("Detected intent | user_message=%s | intent=%s | confidence=%s",
+#                     user_message, detected_intent, confidence_data)
+
+#         # Build prompt
+#         if detected_intent == "normal_qa":
+#             system_msg = prompts.build_qa_prompt(
+#                 knowledge_base or "", user_message, custom_instruction
+#             )
+#             max_tokens = 600
+#         elif detected_intent == "greeting":
+#             system_msg = prompts.build_greeting_prompt(custom_instruction, user_message)
+#             max_tokens = 50
+#         elif detected_intent == "agent_request":
+#             system_msg = prompts.build_agent_request_prompt(custom_instruction)
+#             max_tokens = 50
+#         elif detected_intent == "scheduler":
+#             system_msg = prompts.build_scheduler_prompt(custom_instruction)
+#             max_tokens = 50
+#         else:
+#             logger.error("Unknown intent detected: %s", detected_intent)
+#             raise ValueError(f"Unknown intent: {detected_intent}")
+
+#         return {
+#             "system_message": system_msg,
+#             "detected_intent": detected_intent,
+#             "confidence": confidence_data,
+#             "max_tokens": max_tokens
+#         }
+
+#     except Exception as e:
+#         logger.exception("Failed to build system instruction")
+#         raise e
+
+
+
+
 import logging
 from typing import Optional, Dict
-
-from intent_classification import SemanticRouteClassifier
-from langchain_classic.memory import ConversationBufferWindowMemory
-
-from intent_classification import get_hybrid_classifier
-
-
 
 # -------------------- LOGGER SETUP --------------------
 import os
@@ -19,39 +262,10 @@ logger = logging.getLogger(__name__)
 # ----------------------------------------------------
 
 
-def get_memory() -> ConversationBufferWindowMemory:
-    """
-    Returns a ConversationBufferWindowMemory instance for storing the last 5 chat messages.
-    Note: If you want to persist or share memory across requests, you must store/load messages by session_id.
-    """
-    return ConversationBufferWindowMemory(k=5, return_messages=True)
-
-
-def format_prompt_for_llama3(messages: list[dict], max_chars: int = 8000) -> str:
-    """
-    Format messages for Llama 3 model prompt.
-    Optionally truncates prompt if it exceeds max_chars.
-    """
-    prompt = "<|begin_of_text|>"
-    for msg in messages:
-        content = msg.get("content", "")
-        prompt += (
-            f"<|start_header_id|>{msg.get('role','user')}<|end_header_id|>\n\n"
-            f"{content}<|eot_id|>"
-        )
-        if len(prompt) > max_chars:
-            logger.warning("Prompt truncated to max_chars=%d", max_chars)
-            break
-    prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n"
-    return prompt
-
-
-
-# -------------------- PROMPT TEMPLATES --------------------
 class ChatbotPrompts:
     """
-    Modular prompt templates for different chatbot intents.
-    Optimized for Llama 3 understanding.
+    Professional-grade prompt templates for Llama 3.1 chatbot.
+    Optimized for clarity, consistency, and controlled outputs.
     """
 
     @staticmethod
@@ -60,44 +274,59 @@ class ChatbotPrompts:
         question: str,
         custom_instruction: Optional[str] = None
     ) -> Dict[str, str]:
+        """
+        Question-Answering prompt with strict grounding to knowledge base.
+        Optimized for Llama 3.1's instruction-following capabilities.
+        """
         personality = custom_instruction or (
-            "You are a friendly, professional customer support assistant."
+            "You are a professional customer support assistant known for clear, "
+            "accurate, and helpful responses."
         )
 
-        template = """TASK: QUESTION ANSWERING
+        template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
-You are a customer support assistant answering a question using the knowledge base below.
+# ROLE AND PERSONALITY
+{personality}
 
-Rules:
-- Use ONLY the information from the knowledge base
-- You MAY rephrase or summarize the information
-- Do NOT copy sentences verbatim
-- Do NOT add external knowledge
-    - Output ONLY the final answer
-- If the knowledge base does NOT describe the topic at all, respond with the fallback sentence EXACTLY
+# CORE OBJECTIVE
+Provide accurate answers to customer questions using ONLY the knowledge base provided below.
 
-Fallback sentence:
+# KNOWLEDGE BASE
+```
+{knowledge_base}
+```
+
+# RESPONSE RULES
+1. GROUNDING: Use ONLY information from the knowledge base above
+2. ACCURACY: Never invent or assume information not present in the knowledge base
+3. CLARITY: Explain concepts in 3-6 clear, complete sentences
+4. TONE: Professional, friendly, and empathetic
+5. FORMAT: Use plain text without markdown, bullets, or special formatting
+6. REPHRASING: You may rephrase information for clarity, but never add new facts
+7. COMPLETENESS: Even for simple questions, provide thorough explanations
+
+# FALLBACK PROTOCOL
+If the knowledge base contains NO relevant information to answer the question:
+- Respond with EXACTLY this message (word-for-word):
 "I'd be happy to help you with that! To give you the most accurate information, please share your contact details and one of our customer care representatives will reach out to you shortly."
 
-BEGIN KNOWLEDGE BASE
-====================
-{knowledge_base}
-====================
-END KNOWLEDGE BASE
+# FORBIDDEN ACTIONS
+- Do NOT use external knowledge beyond the knowledge base
+- Do NOT copy sentences verbatim from the knowledge base
+- Do NOT say "based on the knowledge base" or reference the source
+- Do NOT apologize for limitations
+- Do NOT offer to connect them to support (unless using fallback)
 
-QUESTION:
-{question}
+<|eot_id|><|start_header_id|>user<|end_header_id|>
 
-FINAL ANSWER:
-- Explain clearly in 3-6 sentences.
-- If the query is short, still give a detailed explanation, not just one short sentence.
-- Use plain text only.
+{question}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
 """
         return {
             "role": "system",
             "content": template.format(
                 personality=personality,
-                knowledge_base=knowledge_base or "",
+                knowledge_base=knowledge_base or "No knowledge base provided.",
                 question=question
             )
         }
@@ -107,28 +336,51 @@ FINAL ANSWER:
         custom_instruction: Optional[str] = None,
         user_message: Optional[str] = None
     ) -> Dict[str, str]:
-        default_personality = "You are a friendly, professional customer support assistant."
-        personality = custom_instruction or default_personality
+        """
+        Greeting/small talk prompt with strict length control.
+        Prevents over-engagement and keeps responses concise.
+        """
+        personality = custom_instruction or (
+            "You are a warm, professional customer support assistant who values "
+            "efficiency and clarity."
+        )
 
-        template = """You are a customer support assistant.
+        template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
-# YOUR PERSONALITY
+# ROLE AND PERSONALITY
 {personality}
 
-# USER MESSAGE
-{user_message}
+# SITUATION
+The user is greeting you or engaging in casual conversation.
 
-# INSTRUCTIONS
-The user is greeting you or making small talk.
+User message: "{user_message}"
 
-Respond with ONE short, friendly reply (1–2 sentences).
-Do NOT repeat greetings.
-Do NOT ask multiple questions.
-Do NOT continue the conversation.
-Do NOT explain your reasoning.
-Stop immediately after your reply.
+# YOUR TASK
+Respond with ONE brief, friendly acknowledgment.
 
-Your response must contain ONLY what you would say to the user.
+# RESPONSE RULES
+1. LENGTH: Maximum 1-2 sentences (20-30 words)
+2. TONE: Warm but professional
+3. FOCUS: Acknowledge their message and show readiness to help
+4. CONSTRAINTS:
+   - Do NOT ask multiple questions
+   - Do NOT extend the conversation unnecessarily
+   - Do NOT repeat their greeting back
+   - Do NOT explain what you can do unless asked
+   - Do NOT use overly formal language
+
+# EXAMPLES OF GOOD RESPONSES
+- "Hello! I'm here to help you today. What can I assist you with?"
+- "Hi there! How can I support you?"
+- "Good to hear from you! What brings you here today?"
+
+# OUTPUT FORMAT
+Provide ONLY your direct response to the user. No preamble, no explanation.
+
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{user_message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
 """
         return {
             "role": "system",
@@ -139,51 +391,196 @@ Your response must contain ONLY what you would say to the user.
         }
 
     @staticmethod
-    def build_agent_request_prompt(custom_instruction: Optional[str] = None) -> Dict[str, str]:
-        default_personality = "You are a friendly, professional customer support assistant."
-        personality = custom_instruction or default_personality
+    def build_agent_request_prompt(
+        custom_instruction: Optional[str] = None,
+        user_message: Optional[str] = None
+    ) -> Dict[str, str]:
+        """
+        Agent handoff prompt with empathetic acknowledgment.
+        Includes action tag for system integration.
+        """
+        personality = custom_instruction or (
+            "You are an empathetic customer support assistant who prioritizes "
+            "customer satisfaction and knows when to escalate issues."
+        )
 
-        template = """You are a customer support assistant helping transfer a user to a human agent.
+        template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
-# YOUR PERSONALITY
+# ROLE AND PERSONALITY
 {personality}
 
-# INSTRUCTIONS
-The user wants to speak with a human agent, is frustrated, or needs help beyond what you can provide.
+# SITUATION
+The user has requested human assistance or is expressing frustration that requires escalation.
 
-Acknowledge their request warmly and let them know you're connecting them with a team member.
+User message: "{user_message}"
 
-After your brief acknowledgment, respond with ONLY this action tag on a new line:
+# YOUR TASK
+1. Acknowledge their request with empathy
+2. Reassure them that help is coming
+3. Trigger the agent handoff
+
+# RESPONSE RULES
+1. TONE: Empathetic, professional, reassuring
+2. LENGTH: 1-2 sentences of acknowledgment
+3. ACTION: Must end with the action tag on a new line
+4. CONSTRAINTS:
+   - Do NOT try to solve their problem first
+   - Do NOT ask clarifying questions
+   - Do NOT apologize excessively
+   - Do NOT promise specific timeframes
+
+# RESPONSE STRUCTURE
+[Your brief, empathetic acknowledgment]
+
 [ACTION:REQUEST_AGENT]
 
-Respond directly to the user now:"""
+# EXAMPLES OF GOOD ACKNOWLEDGMENTS
+- "I understand you'd like to speak with someone from our team. Let me connect you right away."
+- "I'll get you to the right person who can help with this immediately."
+- "Absolutely, I'm connecting you with a team member now."
 
-        return {"role": "system", "content": template.format(personality=personality)}
+# OUTPUT FORMAT
+Provide your acknowledgment, then add the action tag on a new line.
+
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{user_message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+"""
+        return {
+            "role": "system",
+            "content": template.format(
+                personality=personality,
+                user_message=user_message or "I need to speak with someone."
+            )
+        }
 
     @staticmethod
-    def build_scheduler_prompt(custom_instruction: Optional[str] = None) -> Dict[str, str]:
-        default_personality = "You are a friendly, professional customer support assistant."
-        personality = custom_instruction or default_personality
+    def build_scheduler_prompt(
+        custom_instruction: Optional[str] = None,
+        user_message: Optional[str] = None
+    ) -> Dict[str, str]:
+        """
+        Meeting scheduler prompt with action tag integration.
+        Handles various scheduling-related requests.
+        """
+        personality = custom_instruction or (
+            "You are a helpful customer support assistant who efficiently "
+            "coordinates meetings and calls."
+        )
 
-        template = """You are a customer support assistant helping a user schedule a meeting.
+        template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
-# YOUR PERSONALITY
+# ROLE AND PERSONALITY
 {personality}
 
-# INSTRUCTIONS
-The user wants to book a meeting, schedule a demo, set up a call, or request a callback.
+# SITUATION
+The user wants to schedule a meeting, demo, call, or callback.
 
-Acknowledge their request warmly and let them know you're opening the scheduler.
+User message: "{user_message}"
 
-After your brief acknowledgment, respond with ONLY this action tag on a new line:
+# YOUR TASK
+1. Acknowledge their scheduling request positively
+2. Indicate you're opening the scheduler
+3. Trigger the scheduler interface
+
+# RESPONSE RULES
+1. TONE: Efficient, positive, helpful
+2. LENGTH: 1-2 sentences of acknowledgment
+3. ACTION: Must end with the action tag on a new line
+4. CONSTRAINTS:
+   - Do NOT ask for their availability
+   - Do NOT suggest specific times
+   - Do NOT ask clarifying questions about the meeting purpose
+   - Do NOT explain how the scheduler works
+
+# RESPONSE STRUCTURE
+[Your brief acknowledgment]
+
 [ACTION:SHOW_SCHEDULER]
 
-Respond directly to the user now:"""
+# EXAMPLES OF GOOD ACKNOWLEDGMENTS
+- "I'd be happy to help you schedule that. Let me open the scheduler for you."
+- "Perfect! I'm pulling up the scheduling tool now."
+- "Great, let's get that meeting set up for you."
 
-        return {"role": "system", "content": template.format(personality=personality)}
+# OUTPUT FORMAT
+Provide your acknowledgment, then add the action tag on a new line.
+
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{user_message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+"""
+        return {
+            "role": "system",
+            "content": template.format(
+                personality=personality,
+                user_message=user_message or "I'd like to schedule a meeting."
+            )
+        }
+
+    @staticmethod
+    def build_fallback_prompt(
+        custom_instruction: Optional[str] = None,
+        user_message: Optional[str] = None
+    ) -> Dict[str, str]:
+        """
+        Fallback prompt for unclear or out-of-scope requests.
+        Gracefully handles edge cases.
+        """
+        personality = custom_instruction or (
+            "You are a customer support assistant who handles unclear "
+            "requests with patience and clarity."
+        )
+
+        template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+# ROLE AND PERSONALITY
+{personality}
+
+# SITUATION
+The user's request is unclear, ambiguous, or outside your scope.
+
+User message: "{user_message}"
+
+# YOUR TASK
+Politely acknowledge and offer to clarify or redirect.
+
+# RESPONSE RULES
+1. TONE: Patient, helpful, non-judgmental
+2. LENGTH: 2-3 sentences maximum
+3. APPROACH:
+   - Acknowledge their message
+   - Politely ask for clarification OR
+   - Offer to connect them with support
+4. CONSTRAINTS:
+   - Do NOT guess at their intent
+   - Do NOT provide generic lists of what you can do
+   - Do NOT apologize excessively
+
+# EXAMPLES OF GOOD RESPONSES
+- "I want to make sure I understand correctly. Could you provide a bit more detail about what you're looking for?"
+- "I'd be happy to help! Could you clarify what specific information you need?"
+- "To assist you better, could you let me know more about your question?"
+
+# OUTPUT FORMAT
+Provide ONLY your direct response to the user.
+
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{user_message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+"""
+        return {
+            "role": "system",
+            "content": template.format(
+                personality=personality,
+                user_message=user_message or ""
+            )
+        }
 
 
-# -------------------- ROUTER FUNCTION --------------------
 def build_augmented_system_instruction(
     user_message: str,
     knowledge_base: Optional[str] = None,
@@ -191,15 +588,24 @@ def build_augmented_system_instruction(
     intent: Optional[str] = None
 ) -> Dict[str, any]:
     """
-    Automatically route user message to appropriate prompt.
-
+    Automatically route user message to appropriate prompt template.
+    
+    Args:
+        user_message: The user's input message
+        knowledge_base: Optional knowledge base for QA tasks
+        custom_instruction: Optional custom personality/instructions
+        intent: Optional pre-classified intent (if None, will auto-detect)
+    
     Returns:
         Dict with 'system_message', 'detected_intent', 'confidence', 'max_tokens'
     """
+    from intent_classification import get_hybrid_classifier
+    
     prompts = ChatbotPrompts()
-    router = get_hybrid_classifier()  # Use hybrid classifier
+    router = get_hybrid_classifier()
 
     try:
+        # Intent classification
         if intent is None:
             detected_intent, confidence_data, _ = router.classify(
                 user_message, return_scores=True
@@ -207,31 +613,56 @@ def build_augmented_system_instruction(
         else:
             detected_intent = intent
             confidence_data = {detected_intent: 1.0}
-        if detected_intent != "normal_qa" and confidence_data < 0.5:
+        
+        # Confidence threshold check (handle both float and dict)
+        if isinstance(confidence_data, dict):
+            confidence_score = confidence_data.get(detected_intent, 0.0)
+        else:
+            confidence_score = float(confidence_data)
+        if detected_intent != "normal_qa" and confidence_score < 0.5:
+            logger.warning(
+                "Low confidence for intent=%s (%.2f), defaulting to normal_qa",
+                detected_intent, confidence_score
+            )
             detected_intent = "normal_qa"
+        
+        logger.info(
+            "Intent routing | message='%s' | intent=%s | confidence=%.2f",
+            user_message[:50], detected_intent, confidence_score
+        )
 
-       
-        logger.info("Detected intent | user_message=%s | intent=%s | confidence=%s",
-                    user_message, detected_intent, confidence_data)
-
-        # Build prompt
+        # Route to appropriate prompt
         if detected_intent == "normal_qa":
             system_msg = prompts.build_qa_prompt(
                 knowledge_base or "", user_message, custom_instruction
             )
             max_tokens = 600
+            
         elif detected_intent == "greeting":
-            system_msg = prompts.build_greeting_prompt(custom_instruction, user_message)
-            max_tokens = 50
+            system_msg = prompts.build_greeting_prompt(
+                custom_instruction, user_message
+            )
+            max_tokens = 80
+            
         elif detected_intent == "agent_request":
-            system_msg = prompts.build_agent_request_prompt(custom_instruction)
-            max_tokens = 50
+            system_msg = prompts.build_agent_request_prompt(
+                custom_instruction, user_message
+            )
+            max_tokens = 100
+            
         elif detected_intent == "scheduler":
-            system_msg = prompts.build_scheduler_prompt(custom_instruction)
-            max_tokens = 50
+            system_msg = prompts.build_scheduler_prompt(
+                custom_instruction, user_message
+            )
+            max_tokens = 100
+            
         else:
-            logger.error("Unknown intent detected: %s", detected_intent)
-            raise ValueError(f"Unknown intent: {detected_intent}")
+            logger.warning("Unknown intent: %s, using fallback", detected_intent)
+            system_msg = prompts.build_fallback_prompt(
+                custom_instruction, user_message
+            )
+            max_tokens = 150
+            detected_intent = "fallback"
 
         return {
             "system_message": system_msg,
@@ -241,5 +672,42 @@ def build_augmented_system_instruction(
         }
 
     except Exception as e:
-        logger.exception("Failed to build system instruction")
+        logger.exception("Failed to build system instruction for message: %s", user_message)
         raise e
+
+
+def format_prompt_for_llama3(messages: list[dict], max_chars: int = 8000) -> str:
+    """
+    Format conversation messages for Llama 3.1 with proper chat template.
+    
+    Args:
+        messages: List of message dicts with 'role' and 'content'
+        max_chars: Maximum character limit for the prompt
+    
+    Returns:
+        Formatted prompt string ready for Llama 3.1
+    """
+    prompt = "<|begin_of_text|>"
+    
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        
+        prompt += (
+            f"<|start_header_id|>{role}<|end_header_id|>\n\n"
+            f"{content}<|eot_id|>"
+        )
+        
+        # Truncation check
+        if len(prompt) > max_chars:
+            logger.warning(
+                "Prompt truncated | original_length=%d | max_chars=%d",
+                len(prompt), max_chars
+            )
+            prompt = prompt[:max_chars]
+            break
+    
+    # Add assistant header for generation
+    prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n"
+    
+    return prompt

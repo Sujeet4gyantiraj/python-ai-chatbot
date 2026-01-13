@@ -1,18 +1,15 @@
+
 from . import hf_config  # noqa: F401
-import torch
 from typing import Union, List
-from sentence_transformers import SentenceTransformer
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
 
 
 class EmbeddingService:
     def __init__(self, model_id: str = "nomic-ai/nomic-embed-text-v1.5"):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"Loading SentenceTransformer on {self.device}...")
-        self.model = SentenceTransformer(
-            model_id,
-            trust_remote_code=True,
-            device=self.device,
-        )
+        print(f"Loading LangChain HuggingFaceEmbeddings: {model_id} ...")
+        self.model_id = model_id
+        self.model = HuggingFaceEmbeddings(model_name=model_id, model_kwargs={"trust_remote_code": True})
         self.prompts = {
             "search_query": "search_query: ",
             "search_document": "search_document: ",
@@ -24,25 +21,16 @@ class EmbeddingService:
         task_type: str = "search_query",
         batch_size: int = 32,
     ) -> Union[List[float], List[List[float]]]:
-        """Generate embeddings for single text or batch of texts."""
+        """Generate embeddings for single text or batch of texts using LangChain."""
         if not text or (isinstance(text, list) and len(text) == 0):
             raise ValueError("Input text cannot be empty")
 
         prefix = self.prompts.get(task_type, self.prompts["search_query"])
-
         is_single = isinstance(text, str)
         texts = [text] if is_single else text
-
         texts_with_prefix = [prefix + t for t in texts]
 
-        embeddings = self.model.encode(
-            texts_with_prefix,
-            batch_size=batch_size,
-            convert_to_tensor=False,
-            normalize_embeddings=True,
-            show_progress_bar=len(texts_with_prefix) > 100,
-        )
+        # LangChain's embed_documents returns List[List[float]]
+        embeddings = self.model.embed_documents(texts_with_prefix)
 
-        result = embeddings.tolist()
-
-        return result[0] if is_single else result
+        return embeddings[0] if is_single else embeddings

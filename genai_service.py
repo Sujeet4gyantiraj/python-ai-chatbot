@@ -15,7 +15,7 @@ from genai_core import EmbeddingService, LLMService
 from utils.prompt_builder import (
     build_augmented_system_instruction,
     format_prompt_for_llama3,
-    get_memory
+    # get_memory
 )
 from utils.redis_client import load_chat_history, save_chat_history
 
