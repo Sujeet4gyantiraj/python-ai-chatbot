@@ -121,6 +121,53 @@ def clean_chunk(text: str) -> str:
 
 
 
+# async def background_embedding_job(
+#     cleaned_chunks: List[str],
+#     knowledge_source_id: str,
+#     bot_id: str,
+#     file_name: str,
+# ):
+#     embeddings = await embed_content_batch(cleaned_chunks)
+
+#     # Preserve alignment between chunks and embeddings; skip failed ones (None)
+#     vectors = []
+#     for chunk, emb in zip(cleaned_chunks, embeddings):
+#         if not emb:
+#             continue
+#         vectors.append(
+#             {
+#                 "id": str(uuid.uuid4()),
+#                 "values": emb,
+#                 "metadata": {
+#                     "sourceId": knowledge_source_id,
+#                     "botId": bot_id,
+#                     "fileName": file_name,
+#                     "content": chunk,
+#                 },
+#             }
+#         )
+
+#     # Pinecone is blocking → run in thread to avoid blocking event loop
+#     await asyncio.to_thread(
+#         index.upsert,
+#         vectors=vectors,
+#         namespace=bot_id
+#     )
+
+#     print(f"[EMBEDDING DONE] {file_name} -> {len(vectors)}/{len(cleaned_chunks)} chunks")
+
+
+
+import uuid
+import asyncio
+import logging
+from typing import List
+
+logger = logging.getLogger(__name__)
+
+PINECONE_UPSERT_BATCH_SIZE = 150
+
+
 async def background_embedding_job(
     cleaned_chunks: List[str],
     knowledge_source_id: str,
@@ -129,29 +176,57 @@ async def background_embedding_job(
 ):
     embeddings = await embed_content_batch(cleaned_chunks)
 
-    vectors = [
-        {
-            "id": str(uuid.uuid4()),
-            "values": emb,
-            "metadata": {
-                "sourceId": knowledge_source_id,
-                "botId": bot_id,
-                "fileName": file_name,
-                "content": chunk,
-            },
-        }
-        for chunk, emb in zip(cleaned_chunks, embeddings)
-    ]
+    vectors = []
+    for chunk, emb in zip(cleaned_chunks, embeddings):
+        if emb is None:
+            continue
 
-    # Pinecone is blocking → run in thread to avoid blocking event loop
-    await asyncio.to_thread(
-        index.upsert,
-        vectors=vectors,
-        namespace=bot_id
+        vectors.append(
+            {
+                "id": str(uuid.uuid4()),
+                "values": emb,
+                "metadata": {
+                    "sourceId": knowledge_source_id,
+                    "botId": bot_id,
+                    "fileName": file_name,
+                    # truncate to avoid metadata limits
+                    "content": chunk[:1000],
+                },
+            }
+        )
+
+    failed = len(cleaned_chunks) - len(vectors)
+
+    if not vectors:
+        logger.warning(
+            "No vectors to upsert | file=%s failed=%d",
+            file_name,
+            failed,
+        )
+        return
+
+    try:
+        for i in range(0, len(vectors), PINECONE_UPSERT_BATCH_SIZE):
+            batch = vectors[i : i + PINECONE_UPSERT_BATCH_SIZE]
+            await asyncio.to_thread(
+                index.upsert,
+                vectors=batch,
+                namespace=bot_id,
+            )
+    except Exception as e:
+        logger.error(
+            "Pinecone upsert failed | file=%s error=%s",
+            file_name,
+            str(e),
+        )
+        raise
+
+    logger.info(
+        "Embedding job completed | file=%s success=%d failed=%d",
+        file_name,
+        len(vectors),
+        failed,
     )
-
-    print(f"[EMBEDDING DONE] {file_name} → {len(vectors)} chunks")
-
 
 
 async def upload_knowledge(

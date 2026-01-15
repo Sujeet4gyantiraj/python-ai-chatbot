@@ -1,36 +1,53 @@
-
-from . import hf_config  # noqa: F401
-from typing import Union, List
+from typing import List
+import threading
+import torch
+import logging
 from langchain_community.embeddings import HuggingFaceEmbeddings
+
+logger = logging.getLogger(__name__)
 
 
 
 class EmbeddingService:
     def __init__(self, model_id: str = "nomic-ai/nomic-embed-text-v1.5"):
-        print(f"Loading LangChain HuggingFaceEmbeddings: {model_id} ...")
-        self.model_id = model_id
-        self.model = HuggingFaceEmbeddings(model_name=model_id, model_kwargs={"trust_remote_code": True})
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        self.model = HuggingFaceEmbeddings(
+            model_name=model_id,
+            model_kwargs={
+                "trust_remote_code": True,
+                "device": self.device,
+            },
+        )
+
         self.prompts = {
             "search_query": "search_query: ",
             "search_document": "search_document: ",
         }
 
-    def generate(
-        self,
-        text: Union[str, List[str]],
-        task_type: str = "search_query",
-        batch_size: int = 32,
-    ) -> Union[List[float], List[List[float]]]:
-        """Generate embeddings for single text or batch of texts using LangChain."""
-        if not text or (isinstance(text, list) and len(text) == 0):
-            raise ValueError("Input text cannot be empty")
+        self._lock = threading.Lock()
 
-        prefix = self.prompts.get(task_type, self.prompts["search_query"])
-        is_single = isinstance(text, str)
-        texts = [text] if is_single else text
-        texts_with_prefix = [prefix + t for t in texts]
+    def generate_batch(self, texts: List[str], task_type: str) -> List[List[float]]:
+        prefix = self.prompts[task_type]
+        prefixed = [prefix + t.strip() for t in texts]
 
-        # LangChain's embed_documents returns List[List[float]]
-        embeddings = self.model.embed_documents(texts_with_prefix)
+        with self._lock:
+            embeddings = self.model.embed_documents(prefixed)
 
-        return embeddings[0] if is_single else embeddings
+        return embeddings
+
+    def generate(self, text: str, task_type: str = "search_query") -> List[float]:
+        """Generate an embedding for a single text.
+
+        Convenience wrapper around generate_batch used by query-time code.
+        """
+
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("Input text must be a non-empty string")
+
+        batch = self.generate_batch([text], task_type)
+        if not batch or not isinstance(batch[0], list):
+            raise RuntimeError("EmbeddingService.generate_batch returned invalid format")
+
+        # Ensure plain list[float]
+        return [float(x) for x in batch[0]]

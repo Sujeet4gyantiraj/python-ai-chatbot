@@ -120,7 +120,7 @@ def clean_llm_output(text: str) -> str:
 # Chat Generation API
 # ------------------------------------------------------------------
 async def generate_chat_response(
-    prompt: str,
+    messages: list[dict],
     max_tokens: int = 300,
     temperature: float = 0.1,
     top_p: float = 0.9,
@@ -129,12 +129,18 @@ async def generate_chat_response(
 
     def _run_llm() -> str:
         try:
-            result = _llm_service.generate(
-                prompt=prompt,
+            result = _llm_service.generate_without_tools(
+                messages_data=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
             )
+            # result = _llm_service.generate_with_tools(
+            #     messages_data=messages,
+            #     max_tokens=max_tokens,
+            #     temperature=temperature,
+            #     top_p=top_p,
+            # )
         except Exception as e:
             logger.error("Local LLM error: %s", e)
             raise
@@ -193,13 +199,13 @@ async def generate_and_stream_ai_response(
     bot_id: str,
     session_id: str,
     user_query: str,
-    ai_node_data: Optional[Dict[str, Any]] = None
+    ai_node_data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Optional[str]]:
 
     logger.info(
         "New chat request | bot_id=%s | session_id=%s",
         bot_id,
-        session_id
+        session_id,
     )
 
     try:
@@ -210,7 +216,7 @@ async def generate_and_stream_ai_response(
         try:
             # ---------------- RAG ----------------
             knowledge_base = ""
-          
+
             if not ai_node_data or not ai_node_data.get("disableKnowledgeBase"):
                 query_embedding = await embed_query(user_query)
                 logger.debug("Pinecone query embedding generated")
@@ -218,13 +224,12 @@ async def generate_and_stream_ai_response(
                     vector=query_embedding,
                     top_k=5,
                     include_metadata=True,
-                    namespace=bot_id
+                    namespace=bot_id,
                 )
 
                 logger.debug("Pinecone raw response: %s", res)
 
                 SIMILARITY_THRESHOLD = 0.55
-                # Handle both dict and Pinecone SDK response objects
                 matches: list = []
                 try:
                     if isinstance(res, dict):
@@ -247,7 +252,7 @@ async def generate_and_stream_ai_response(
                             score = m.get("score", 0.0) or 0.0
                         else:
                             md = getattr(m, "metadata", {}) or {}
-                            content = (md.get("content") if isinstance(md, dict) else None)
+                            content = md.get("content") if isinstance(md, dict) else None
                             score = getattr(m, "score", 0.0) or 0.0
                         if content and score >= SIMILARITY_THRESHOLD:
                             filtered_contents.append(content)
@@ -256,14 +261,15 @@ async def generate_and_stream_ai_response(
                         knowledge_base = "\n\n---\n\n".join(filtered_contents)
 
                 logger.debug("Knowledge base size=%d chars", len(knowledge_base))
+
             # ---------------- PROMPT ----------------
             history = await load_chat_history(bot_id, session_id, k=10)
             prompt_dict = build_augmented_system_instruction(
-                user_query,
-                knowledge_base,
-                custom_instruction=""
+                user_message=user_query,
+                knowledge_base=knowledge_base,
+                custom_instruction="",
             )
-            system_prompt = prompt_dict["system_message"]["content"]
+
             max_tokens = prompt_dict.get("max_tokens", 300)
             action = prompt_dict.get("detected_intent")
 
@@ -273,22 +279,19 @@ async def generate_and_stream_ai_response(
             messages = [
                 prompt_dict["system_message"],
                 *history,
-                {"role": "user", "content": user_query}
+                {"role": "user", "content": user_query},
             ]
-
-            prompt = format_prompt_for_llama3(messages)
 
             # ---------------- LLM ----------------
             full_text = await generate_chat_response(
-                prompt,
+                messages,
                 max_tokens=max_tokens,
                 temperature=0.2,
-                top_p=0.9
+                top_p=0.9,
             )
 
             # ---------------- POST PROCESS ----------------
             clean_text = clean_llm_output(full_text)
-            # breakpoint()
 
             if action == "greeting":
                 clean_text = extract_before_hash(clean_text)
@@ -303,7 +306,7 @@ async def generate_and_stream_ai_response(
             return {
                 "fullText": full_text,
                 "cleanText": clean_text,
-                "action": action
+                "action": action,
             }
 
         except Exception:
@@ -313,7 +316,9 @@ async def generate_and_stream_ai_response(
     except Exception:
         logger.exception("GENAI outer error")
         return {"fullText": "", "cleanText": "", "action": None}
-    
+
+
+
 
 
 

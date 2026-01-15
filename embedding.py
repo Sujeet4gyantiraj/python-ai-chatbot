@@ -1,64 +1,43 @@
 import asyncio
-import os
+from concurrent.futures import ThreadPoolExecutor
 import logging
-from typing import List
+from typing import List, Optional
 
 from genai_core import EmbeddingService
-
-
-# -------------------- LOGGER SETUP --------------------
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-
-logging.basicConfig(
-    level=LOG_LEVEL,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(filename)s:%(lineno)d | %(message)s"
-)
-
 logger = logging.getLogger(__name__)
-# ----------------------------------------------------
-
 
 _embedding_service = EmbeddingService()
 
+_embedding_executor = ThreadPoolExecutor(max_workers=1)
 
-async def embed_content_batch(chunks: List[str]) -> List[List[float]]:
-    logger.info("Embedding batch started | chunks=%d", len(chunks))
+EMBED_BATCH_SIZE = 128  # increase gradually
 
-    if not chunks:
-        return []
 
+async def embed_content_batch(chunks: List[str]) -> List[Optional[List[float]]]:
+    results = [None] * len(chunks)
     loop = asyncio.get_running_loop()
-    BATCH_SIZE = 16
 
-    def _run_batch(batch_chunks: List[str]) -> List[List[float]]:
-        emb = _embedding_service.generate(text=batch_chunks, task_type="search_document")
+    for start in range(0, len(chunks), EMBED_BATCH_SIZE):
+        batch_indices = []
+        batch_texts = []
 
-        # EmbeddingService returns list[list[float]] for batched input
-        if not isinstance(emb, list):
-            raise RuntimeError("EmbeddingService returned invalid format")
+        for i in range(start, min(start + EMBED_BATCH_SIZE, len(chunks))):
+            text = chunks[i].strip()
+            if text:
+                batch_indices.append(i)
+                batch_texts.append(text)
 
-        if emb and not isinstance(emb[0], list):
-            # Single embedding returned for some reason
-            emb = [emb]
+        if not batch_texts:
+            continue
 
-        return [[float(x) for x in row] for row in emb]
+        embeddings = await loop.run_in_executor(
+            _embedding_executor,
+            _embedding_service.generate_batch,
+            batch_texts,
+            "search_document",
+        )
 
-    try:
-        tasks = []
-        for i in range(0, len(chunks), BATCH_SIZE):
-            batch = chunks[i:i + BATCH_SIZE]
-            tasks.append(loop.run_in_executor(None, _run_batch, batch))
+        for idx, emb in zip(batch_indices, embeddings):
+            results[idx] = emb
 
-        all_results: List[List[float]] = []
-        if tasks:
-            batch_results = await asyncio.gather(*tasks, return_exceptions=False)
-            for br in batch_results:
-                all_results.extend(br)
-
-        logger.info("Embedding batch completed successfully | chunks=%d", len(chunks))
-        return all_results
-
-    except Exception:
-        logger.exception("Embedding batch failed")
-        raise
-
+    return results
