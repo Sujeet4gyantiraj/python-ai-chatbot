@@ -77,9 +77,9 @@ class LLMService:
         )
 
         messages = self._convert_messages(messages_data)
-
+        # breakpoint()
         response = chat.invoke(messages)
-
+         
         text_out = getattr(response, "content", str(response)).strip()
 
         return {
