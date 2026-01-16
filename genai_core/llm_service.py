@@ -2,7 +2,9 @@ import os
 
 from . import hf_config  # noqa: F401
 from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain.agents import create_agent
+from .tools import get_user_ticket, create_ticket, web_search
 
 
 class LLMService:
@@ -27,8 +29,7 @@ class LLMService:
 
         print(f"Loading LangChain HuggingFaceEndpoint chat model: {model_id} ...")
 
-        # Use the conversational task since meta-llama/3.1 instruct models on
-        # Hugging Face Inference are exposed as chat/conversational endpoints.
+        # Use conversational task; novita only supports this for this model.
         base_llm = HuggingFaceEndpoint(
             repo_id=model_id,
             temperature=self.default_temperature,
@@ -37,29 +38,92 @@ class LLMService:
         )
 
         self.chat_model = ChatHuggingFace(llm=base_llm)
+        # Tools available for agent-style workflows
+        self.tools = [web_search, get_user_ticket, create_ticket]
+        self.tool_system_prompt = (
+            "You are an assistant that can answer questions and use tools. "
+            "You have access to web_search for browsing the internet and "
+            "ticket tools for support workflows. Decide when a tool is "
+            "actually needed; otherwise answer directly."
+        )
 
-    def generate(self, prompt: str, max_tokens: int, temperature: float, top_p: float):
-        """Generate text for a single prompt.
+    def _convert_messages(self, messages_data):
+        """Convert list[dict] into LangChain message objects for chat model."""
+        messages = []
 
-        Returns a dict aligned with the previous vLLM-based contract.
-        """
-        # Build a temporary chat model with per-request params while
-        # reusing the underlying repo_id and provider configuration.
-        #
-        # We avoid passing max_new_tokens here because some providers
-        # don't accept it on chat_completion; instead, rely on the
-        # model's own default max tokens.
+        if isinstance(messages_data, list):
+            for m in messages_data:
+                if not isinstance(m, dict):
+                    continue
+                role = m.get("role", "user")
+                content = m.get("content", "")
+
+                if role == "system":
+                    messages.append(SystemMessage(content=content))
+                elif role == "assistant":
+                    messages.append(AIMessage(content=content))
+                else:
+                    messages.append(HumanMessage(content=content))
+        else:
+            messages.append(HumanMessage(content=str(messages_data)))
+
+        return messages
+
+    def generate_without_tools(self, messages_data, max_tokens: int, temperature: float, top_p: float):
+        """Generate text for a chat conversation (system + history + user)."""
         chat = self.chat_model.bind(
             temperature=temperature,
             top_p=top_p,
         )
 
-        # Our upstream code already formats a full prompt string; treat it as
-        # a single user message for the conversational endpoint.
-        message = HumanMessage(content=prompt)
-        response = chat.invoke([message])
+        messages = self._convert_messages(messages_data)
+
+        response = chat.invoke(messages)
 
         text_out = getattr(response, "content", str(response)).strip()
+
+        return {
+            "generated_text": text_out,
+            "finish_reason": "stop",
+        }
+
+    def generate_with_tools(self, messages_data, max_tokens: int, temperature: float, top_p: float):
+        """Use an agent with tools (web_search, tickets) when no KB context.
+
+        Expects the same messages_data format as `generate`; it will
+        extract the latest user message and run the tool-enabled agent
+        only on that input.
+        """
+
+        # Extract last user message content
+        user_message = ""
+        breakpoint()
+        if isinstance(messages_data, list):
+            for m in reversed(messages_data):
+                if isinstance(m, dict) and m.get("role") == "user":
+                    user_message = str(m.get("content", ""))
+                    break
+
+        if not user_message:
+            # Fallback: stringify entire messages_data
+            user_message = str(messages_data)
+
+        llm = self.chat_model.bind(
+            temperature=temperature,
+            top_p=top_p,
+        )
+        breakpoint()
+        agent = create_agent(model=llm,tools=self.tools,system_prompt=self.tool_system_prompt)
+
+        result = agent.invoke({"input": user_message})
+
+        # Normalize agent result to plain text
+        if hasattr(result, "content"):
+            text_out = result.content
+        else:
+            text_out = str(result)
+
+        text_out = text_out.strip()
 
         return {
             "generated_text": text_out,
