@@ -263,7 +263,7 @@ async def generate_and_stream_ai_response(
                 logger.debug("Knowledge base size=%d chars", len(knowledge_base))
 
             # ---------------- PROMPT ----------------
-            breakpoint()
+           
             history = await load_chat_history(bot_id, session_id, k=10)
             prompt_dict = build_augmented_system_instruction(
                 user_message=user_query,
