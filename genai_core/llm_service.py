@@ -12,7 +12,7 @@ class LLMService:
 
     This replaces the previous vLLM-backed implementation and relies on
     Hugging Face Inference (or compatible endpoint) configured via
-    HUGGINGFACEHUB_API_TOKEN and repo_id.
+    HF_TOKEN and repo_id.
     """
 
     def __init__(self):

@@ -4,7 +4,7 @@ services:
     container_name: chatbot-fastapi
     environment:
       - DATABASE_URL=postgresql://adarsh1927:Adarsh%40123@postgres:5432/rhysleydb
-      - HUGGINGFACEHUB_API_TOKEN=${HUGGINGFACEHUB_API_TOKEN}
+      - HF_TOKEN=${HF_TOKEN}
       - REDIS_URL=redis://redis:6379/0
     ports:
       - "8000:8000"
