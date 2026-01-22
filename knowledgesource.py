@@ -165,7 +165,7 @@ from typing import List
 
 logger = logging.getLogger(__name__)
 
-PINECONE_UPSERT_BATCH_SIZE = 150
+PINECONE_UPSERT_BATCH_SIZE = 100
 
 
 async def background_embedding_job(
@@ -177,7 +177,7 @@ async def background_embedding_job(
     embeddings = await embed_content_batch(cleaned_chunks)
 
     vectors = []
-    for chunk, emb in zip(cleaned_chunks, embeddings):
+    for idx, (chunk, emb) in enumerate(zip(cleaned_chunks, embeddings)):
         if emb is None:
             continue
 
@@ -189,6 +189,7 @@ async def background_embedding_job(
                     "sourceId": knowledge_source_id,
                     "botId": bot_id,
                     "fileName": file_name,
+                    "chunkIndex": idx,
                     # truncate to avoid metadata limits
                     "content": chunk[:1000],
                 },
