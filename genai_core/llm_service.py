@@ -34,7 +34,7 @@ class LLMService:
             repo_id=model_id,
             temperature=self.default_temperature,
             top_p=self.default_top_p,
-            task="conversational",
+            task="text-generation",
         )
 
         self.chat_model = ChatHuggingFace(llm=base_llm)
@@ -74,6 +74,7 @@ class LLMService:
         chat = self.chat_model.bind(
             temperature=temperature,
             top_p=top_p,
+            max_tokens=max_tokens
         )
 
         messages = self._convert_messages(messages_data)
@@ -97,7 +98,7 @@ class LLMService:
 
         # Extract last user message content
         user_message = ""
-        breakpoint()
+       
         if isinstance(messages_data, list):
             for m in reversed(messages_data):
                 if isinstance(m, dict) and m.get("role") == "user":
@@ -112,7 +113,7 @@ class LLMService:
             temperature=temperature,
             top_p=top_p,
         )
-        breakpoint()
+     
         agent = create_agent(model=llm,tools=self.tools,system_prompt=self.tool_system_prompt)
 
         result = agent.invoke({"input": user_message})

@@ -22,7 +22,8 @@ class ChatbotPrompts:
     def build_qa_prompt(
         knowledge_base: str,
         question: str,
-        custom_instruction: Optional[str] = None
+        custom_instruction: Optional[str] = None,
+        history: Optional[list[dict]] = None,
     ) -> Dict[str, str]:
         """
         Question-Answering prompt with strict grounding to knowledge base.
@@ -33,6 +34,26 @@ class ChatbotPrompts:
             "accurate, and helpful responses."
         )
 
+        # Serialize recent conversation history into a compact text block
+        history_lines: list[str] = []
+        if history:
+            for m in history:
+                if not isinstance(m, dict):
+                    continue
+                role = m.get("role", "user")
+                content = str(m.get("content", "")).strip()
+                if not content:
+                    continue
+                if role == "assistant":
+                    prefix = "Assistant"
+                elif role == "system":
+                    prefix = "System"
+                else:
+                    prefix = "User"
+                history_lines.append(f"{prefix}: {content}")
+
+        history_block = "\n".join(history_lines) if history_lines else "No prior conversation history."
+
         template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
 # ROLE AND PERSONALITY
@@ -41,19 +62,30 @@ class ChatbotPrompts:
 # CORE OBJECTIVE
 Provide accurate answers to customer questions using ONLY the knowledge base provided below.
 
+# CONVERSATION HISTORY (MOST RECENT LAST)
+
+{history_block}
+
 # KNOWLEDGE BASE
-```
+
 {knowledge_base}
-```
+
 
 # RESPONSE RULES
-1. GROUNDING: Use ONLY information from the knowledge base above
-2. ACCURACY: Never invent or assume information not present in the knowledge base
-3. CLARITY: Explain concepts in 3-6 clear, complete sentences
-4. TONE: Professional, friendly, and empathetic
-5. FORMAT: Use plain text without markdown, bullets, or special formatting
-6. REPHRASING: You may rephrase information for clarity, but never add new facts
-7. COMPLETENESS: Even for simple questions, provide thorough explanations
+1. GROUNDING: Use ONLY information from the knowledge base above.
+2. ACCURACY: Never invent or assume information not present in the knowledge base.
+3. CLARITY: Use clear sentences that are easy to understand.
+4. TONE: Professional, friendly, and empathetic.
+5. FORMAT: Use plain text. You may use a numbered list (1., 2., 3.) when describing steps.
+6. REPHRASING: You may rephrase information for clarity, but never add new facts.
+7. COMPLETENESS: Include every distinct step, option, warning, and important condition from the knowledge base that relates to the user's question, even if the answer becomes long. Do not skip or compress steps that appear in the knowledge base.
+
+# RESPONSE FORMAT (CONVERSATIONAL BUT STRUCTURED)
+Format your answer so it feels like a natural support conversation while still being easy to follow:
+- Start by directly answering the user's question in plain language.
+- If the user is asking "how to" or "how do I" or is clearly asking for a procedure or setup (for example: install, connect, configure, steps, process, procedure), provide the rest of the answer as a detailed numbered list of steps (1., 2., 3., ...), one step per line. The list MUST cover all relevant steps from the knowledge base, including steps that appear later in the text or after separators like "---".
+- If the knowledge base text already contains step-by-step or bullet-point instructions that are relevant to the question, preserve that structure and do not shorten, merge, or omit distinct steps or sub-steps.
+- For non-procedural questions (definitions, descriptions, general information), you may use multiple short paragraphs so that all relevant points from the knowledge base are covered.
 
 # FALLBACK PROTOCOL
 If the knowledge base contains NO relevant information to answer the question:
@@ -77,7 +109,8 @@ If the knowledge base contains NO relevant information to answer the question:
             "content": template.format(
                 personality=personality,
                 knowledge_base=knowledge_base or "No knowledge base provided.",
-                question=question
+                history_block=history_block,
+                question=question,
             )
         }
 
@@ -332,6 +365,7 @@ Provide ONLY your direct response to the user.
 
 
 def build_augmented_system_instruction(
+    history: list[dict],
     user_message: str,
     knowledge_base: Optional[str] = None,
     custom_instruction: Optional[str] = None,
@@ -384,7 +418,10 @@ def build_augmented_system_instruction(
         # Route to appropriate prompt
         if detected_intent == "normal_qa":
             system_msg = prompts.build_qa_prompt(
-                knowledge_base or "", user_message, custom_instruction
+                knowledge_base or "",
+                user_message,
+                custom_instruction,
+                history,
             )
             max_tokens = 600
             

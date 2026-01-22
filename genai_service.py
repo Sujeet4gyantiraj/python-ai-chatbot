@@ -121,7 +121,7 @@ def clean_llm_output(text: str) -> str:
 # ------------------------------------------------------------------
 async def generate_chat_response(
     messages: list[dict],
-    max_tokens: int = 300,
+    max_tokens: int = 2000,
     temperature: float = 0.1,
     top_p: float = 0.9,
 ) -> str:
@@ -222,11 +222,11 @@ async def generate_and_stream_ai_response(
                 logger.debug("Pinecone query embedding generated")
                 res = pinecone_index.query(
                     vector=query_embedding,
-                    top_k=5,
+                    top_k=8,
                     include_metadata=True,
                     namespace=bot_id,
                 )
-
+                
                 logger.debug("Pinecone raw response: %s", res)
 
                 SIMILARITY_THRESHOLD = 0.55
@@ -266,12 +266,13 @@ async def generate_and_stream_ai_response(
            
             history = await load_chat_history(bot_id, session_id, k=10)
             prompt_dict = build_augmented_system_instruction(
+                history=history,
                 user_message=user_query,
                 knowledge_base=knowledge_base,
                 custom_instruction="",
             )
-
-            max_tokens = prompt_dict.get("max_tokens", 300)
+            
+            max_tokens = prompt_dict.get("max_tokens", 800)
             action = prompt_dict.get("detected_intent")
 
             logger.debug("Detected intent: %s", action)
@@ -279,10 +280,10 @@ async def generate_and_stream_ai_response(
 
             messages = [
                 prompt_dict["system_message"],
-                *history,
+                # *history,
                 {"role": "user", "content": user_query},
             ]
-
+             
             # ---------------- LLM ----------------
             full_text = await generate_chat_response(
                 messages,
