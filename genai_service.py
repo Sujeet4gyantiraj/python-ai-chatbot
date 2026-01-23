@@ -200,6 +200,8 @@ async def generate_and_stream_ai_response(
     session_id: str,
     user_query: str,
     ai_node_data: Optional[Dict[str, Any]] = None,
+    tenant_name: Optional[str] = None,
+    tenant_description: Optional[str] = None,
 ) -> Dict[str, Optional[str]]:
 
     logger.info(
@@ -265,11 +267,30 @@ async def generate_and_stream_ai_response(
             # ---------------- PROMPT ----------------
            
             history = await load_chat_history(bot_id, session_id, k=10)
+            # breakpoint()
+
+            # Build an optional tenant-specific instruction so the LLM
+            # understands which tenant (brand/customer) it is answering for.
+            tenant_custom_instruction: Optional[str] = None
+            if tenant_name or tenant_description:
+                lines: list[str] = [
+                    "You are a professional customer support assistant known for clear, accurate, and helpful responses.",
+                ]
+
+                lines.append("")
+                lines.append("TENANT CONTEXT:")
+                if tenant_name:
+                    lines.append(f"- Tenant name: {tenant_name}")
+                if tenant_description:
+                    lines.append(f"- Tenant description: {tenant_description}")
+
+                tenant_custom_instruction = "\n".join(lines)
+
             prompt_dict = build_augmented_system_instruction(
                 history=history,
                 user_message=user_query,
                 knowledge_base=knowledge_base,
-                custom_instruction="",
+                custom_instruction=tenant_custom_instruction,
             )
             
             max_tokens = prompt_dict.get("max_tokens", 800)

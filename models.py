@@ -5,6 +5,9 @@ class GenerateAIRequest(BaseModel):
     bot_id: str
     session_id: str
     user_query: str
+    # Optional multi-tenant context so the LLM can tailor responses
+    tenant_name: Optional[str] = None
+    tenant_description: Optional[str] = None
     ai_node_data: Optional[Dict[str, Any]] = None
 
 # Add more models and schemas here as needed for requests, responses, or database tables
