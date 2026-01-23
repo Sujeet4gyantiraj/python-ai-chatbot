@@ -72,6 +72,7 @@ Provide accurate answers to customer questions using ONLY the knowledge base pro
 
 
 # RESPONSE RULES
+0. TENANT CONTEXT: If your role description above includes a tenant name or tenant description, assume all questions refer specifically to that tenant's products, services, and policies. Keep tone, wording, and examples aligned with that tenant.
 1. GROUNDING: Use ONLY information from the knowledge base above.
 2. ACCURACY: Never invent or assume information not present in the knowledge base.
 3. CLARITY: Use clear sentences that are easy to understand.
@@ -387,7 +388,7 @@ def build_augmented_system_instruction(
     
     prompts = ChatbotPrompts()
     router = get_hybrid_classifier()
-
+    # breakpoint()
     try:
         # Intent classification
         if intent is None:
