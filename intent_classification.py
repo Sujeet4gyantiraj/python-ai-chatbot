@@ -108,6 +108,8 @@ class SemanticRouteClassifier:
                     'set up a meeting time', 'reserve a time', 'book a session', 
                     'schedule a call', 'arrange an appointment', 'when can I come in',
                     'make an appointment', 'schedule me in',
+                    'arrange a call from sales', 'schedule a sales call',
+                    'I want a call from the sales team', 'book a call with sales',
                     'i want to schedule my meeting', 'i want to schedule a meeting',
                     'want to schedule meeting', 'schedule my meeting', 'book my appointment'
                 ],
@@ -121,12 +123,15 @@ class SemanticRouteClassifier:
                     r'\bschedule\s+me\s+(in|for)\b',
                     r'\bschedule\s+(my|a|an|the)?\s*(meeting|appointment|call|session)\b',
                     r'\bbook\s+(my|a|an|the)?\s*(meeting|appointment|call|session)\b',
+                    r'\b(call|meeting)\b.*\b(sales|salesperson|sales\s+team)\b',
                 ],
                 keywords=['appointment', 'schedule', 'book', 'meeting', 'consultation', 'visit', 
-                         'reservation', 'calendar', 'time slot', 'reserve', 'arrange', 'session', 'availability', 'call'],
+                         'reservation', 'calendar', 'time slot', 'reserve', 'arrange', 'session', 'availability', 'call',
+                         'sales', 'salesperson', 'sales team'],
                 phrase_patterns=['book appointment', 'schedule meeting', 'make appointment', 'set up meeting',
                                'reserve time', 'book session', 'schedule visit', 'appointment slot',
-                               'want to schedule', 'need to schedule', 'schedule my', 'book my']
+                               'want to schedule', 'need to schedule', 'schedule my', 'book my',
+                               'sales call', 'call from sales', 'call with sales']
             ),
             
             'normal_qa': Route(
@@ -491,6 +496,10 @@ class BERTIntentClassifier:
                     'I want to schedule my meeting',
                     'I need to book a meeting',
                     'schedule my appointment',
+                    'arrange a call from sales',
+                    'schedule a sales call',
+                    'I want a call from the sales team',
+                    'book a call with sales',
                 ],
                 patterns=[], keywords=[], phrase_patterns=[]
             ),

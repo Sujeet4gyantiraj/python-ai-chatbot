@@ -101,19 +101,31 @@ async def generate_embedding(
 embed_query = generate_embedding
 
 
-
 def clean_llm_output(text: str) -> str:
-    # Remove any [ACTION:...] blocks
-    text = re.sub(r"\[ACTION:.*?\]", "", text, flags=re.DOTALL)
+        """Post-process raw LLM output.
 
-    # Stop at markers like #, END RESPONSE, END CONVERSATION, etc.
-    text = re.split(
-        r"#|END CONVERSATION|END RESPONSE|END SESSION",
-        text,
-        maxsplit=1
-    )[0]
+        - Strip any internal action markers (e.g. ``[ACTION:REQUEST_AGENT]``
+            or ``ACTION:\nSHOW_SCHEDULER``) so they are not shown to the user.
+        - Stop at explicit end markers like ``END RESPONSE`` but **do not**
+            treat a plain ``#`` as an end marker.
+        """
 
-    return text.strip()
+        # If an ACTION marker appears, keep only the text before it.
+        # This covers both "[ACTION:XYZ]" and multi-line forms like
+        # "ACTION:\nXYZ".
+        text = re.split(r"\[?ACTION:", text, maxsplit=1)[0]
+
+        # Also strip any leftover [ACTION:...] blocks just in case
+        text = re.sub(r"\[ACTION:.*?\]", "", text, flags=re.DOTALL)
+
+        # Stop only at explicit textual end markers, not on every '#'
+        text = re.split(
+                r"END CONVERSATION|END RESPONSE|END SESSION",
+                text,
+                maxsplit=1,
+        )[0]
+
+        return text.strip()
 
 
 # ------------------------------------------------------------------
@@ -286,24 +298,113 @@ async def generate_and_stream_ai_response(
 
                 tenant_custom_instruction = "\n".join(lines)
 
+            # Count fallback responses in history
+            fallback_count = 0
+            fallback_phrases = [
+                "don't have enough information",
+                "unable to answer",
+                "please share your contact details",
+                "provide your contact information",
+                "not able to find any information",
+                "i'm sorry i couldn't answer",
+                "i'm sorry, i don't have enough information",
+                "i'm having trouble understanding your question",
+                "i'm not sure i can find any information",
+                "i'm going to need a bit more information",
+                "i need a bit more information",
+                "could you clarify",
+                "could you provide more context",
+                "can you please provide more context",
+                "i'd be happy to help, but i need a bit more information",
+                "to assist you better, could you let me know more",
+                "i want to make sure i understand correctly",
+                "i'd be happy to help! could you clarify",
+                "i'd be happy to help, but i need a bit more context",
+                "i'm still not sure who or what",
+                "i'm not familiar with the name",
+                "i'm having trouble finding any relevant information",
+                "i'm still unclear about what you're looking for",
+                   "don't have enough information",
+                        "unable to answer",
+                        "please share your contact",
+                        "provide your contact",
+                        "not able to find any information",
+                        "sorry i couldn't answer",
+                        "sorry, i don't have enough information",
+                        "having trouble understanding",
+                        "not sure i can find any information",
+                        "need a bit more information",
+                        "could you clarify",
+                        "could you provide more context",
+                        "can you please provide more context",
+                        "i'd be happy to help, but i need",
+                        "to assist you better, could you let me know more",
+                        "make sure i understand",
+                        "could you rephrase",
+                        "not sure i understand",
+                        "still unclear",
+                        "not familiar with the name",
+                        "having trouble finding any relevant information",
+                        "better assist you",
+                        "could you please rephrase",
+                        "i'm not sure i understand",
+                        "i'm not sure what you're looking for",
+                        "i'm still not sure",
+                        "i'm still unclear",
+                        "i'm not familiar with",
+                        "i'm having trouble finding",
+                        "i'm having trouble understanding",
+                        "i'm not sure i can help",
+                        "i'm not sure how to help",
+                        "i'm not sure i can answer",
+                        "i'm not sure i have enough information",
+                        "i'm not sure i understand what you're looking for",
+                    
+            ]
+       
+            for m in history or []:
+                if (
+                    isinstance(m, dict)
+                    and m.get("role") == "assistant"
+                ):
+                    content = m.get("content", "").lower()
+                    # Use substring matching for more robust fallback detection
+                    if any(phrase in content for phrase in fallback_phrases):
+                        fallback_count += 1
+            
             prompt_dict = build_augmented_system_instruction(
                 history=history,
                 user_message=user_query,
                 knowledge_base=knowledge_base,
                 custom_instruction=tenant_custom_instruction,
+                fallback_count=fallback_count,
             )
-            
+
+           
+           
             max_tokens = prompt_dict.get("max_tokens", 800)
             action = prompt_dict.get("detected_intent")
 
             logger.debug("Detected intent: %s", action)
             logger.debug("Final system prompt prepared")
+             # If fallback_count >= 4, set action to 'fallback_max' for escalation
+            if fallback_count >= 3:
+                # breakpoint()
+                action = "fallback_max"
 
-            messages = [
-                prompt_dict["system_message"],
-                # *history,
-                {"role": "user", "content": user_query},
-            ]
+            # Build full message list for the LLM: system -> prior turns -> current user
+            messages: list[dict] = [prompt_dict["system_message"]]
+
+            for h in history:
+                if not isinstance(h, dict):
+                    continue
+                role = h.get("role")
+                content = h.get("content")
+                if not role or not isinstance(content, str) or not content.strip():
+                    continue
+                messages.append({"role": role, "content": content})
+
+            messages.append({"role": "user", "content": user_query})
              
             # ---------------- LLM ----------------
             full_text = await generate_chat_response(
@@ -315,9 +416,11 @@ async def generate_and_stream_ai_response(
 
             # ---------------- POST PROCESS ----------------
             clean_text = clean_llm_output(full_text)
-
+            print("Clean LLM outputttttttttttttttttttttttttttttt:", clean_text)
+            print("Actionkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk:", action , fallback_count)
             if action == "greeting":
                 clean_text = extract_before_hash(clean_text)
+            
 
             # ---------------- SAVE HISTORY ----------------
             history.append({"role": "user", "content": user_query})

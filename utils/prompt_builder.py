@@ -30,8 +30,10 @@ class ChatbotPrompts:
         Optimized for Llama 3.1's instruction-following capabilities.
         """
         personality = custom_instruction or (
-            "You are a professional customer support assistant known for clear, "
-            "accurate, and helpful responses."
+            "You are a polite, professional, and friendly customer support "
+            "assistant. You greet users in a calm, businesslike way and "
+            "focus on how you can help them. You do not talk about your "
+            "own feelings or how you are doing."
         )
 
         # Serialize recent conversation history into a compact text block
@@ -76,7 +78,7 @@ Provide accurate answers to customer questions using ONLY the knowledge base pro
 1. GROUNDING: Use ONLY information from the knowledge base above.
 2. ACCURACY: Never invent or assume information not present in the knowledge base.
 3. CLARITY: Use clear sentences that are easy to understand.
-4. TONE: Professional, friendly, and empathetic.
+4. TONE: Warm, friendly, conversational, and empathetic.
 5. FORMAT: Use plain text. You may use a numbered list (1., 2., 3.) when describing steps.
 6. REPHRASING: You may rephrase information for clarity, but never add new facts.
 7. COMPLETENESS: Include every distinct step, option, warning, and important condition from the knowledge base that relates to the user's question, even if the answer becomes long. Do not skip or compress steps that appear in the knowledge base.
@@ -91,7 +93,7 @@ Format your answer so it feels like a natural support conversation while still b
 # FALLBACK PROTOCOL
 If the knowledge base contains NO relevant information to answer the question:
 - Respond with EXACTLY this message (word-for-word):
-"I'd be happy to help you with that! To give you the most accurate information, please share your contact details and one of our customer care representatives will reach out to you shortly."
+"I'm sorry, I don't have enough information to answer that right now. If you have any other questions, feel free to ask."
 
 # FORBIDDEN ACTIONS
 - Do NOT use external knowledge beyond the knowledge base
@@ -120,13 +122,16 @@ If the knowledge base contains NO relevant information to answer the question:
         custom_instruction: Optional[str] = None,
         user_message: Optional[str] = None
     ) -> Dict[str, str]:
+        """Greeting/small talk prompt with strict length control.
+
+        Keeps responses concise, polite, and professional.
         """
-        Greeting/small talk prompt with strict length control.
-        Prevents over-engagement and keeps responses concise.
-        """
+
         personality = custom_instruction or (
-            "You are a warm, professional customer support assistant who values "
-            "efficiency and clarity."
+            "You are a polite, professional, and friendly customer support "
+            "assistant. You greet users in a calm, businesslike way and "
+            "focus on how you can help them. You do not talk about your "
+            "own feelings or how you are doing."
         )
 
         template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
@@ -135,28 +140,30 @@ If the knowledge base contains NO relevant information to answer the question:
 {personality}
 
 # SITUATION
-The user is greeting you or engaging in casual conversation.
+The user is greeting you or sending a very short message (for example "hi", "ok", "thanks", "not now") during a conversation.
 
 User message: "{user_message}"
 
 # YOUR TASK
-Respond with ONE brief, friendly acknowledgment.
+- If the user is clearly starting a conversation or asking for help, respond with ONE brief, professional greeting that offers assistance.
+- If the user is simply acknowledging your previous answer or deferring the conversation (for example "ok", "thanks", "not now", "no issue"), respond with ONE brief acknowledgment and let them know they can come back any time. Do NOT ask again what you can do for them.
 
 # RESPONSE RULES
 1. LENGTH: Maximum 1-2 sentences (20-30 words)
-2. TONE: Warm but professional
-3. FOCUS: Acknowledge their message and show readiness to help
+2. TONE: Polite, professional, and friendly (no slang)
+3. FOCUS: Use the recent conversation context and the latest user message to choose either a greeting + offer of help OR a short acknowledgment/closing.
 4. CONSTRAINTS:
-   - Do NOT ask multiple questions
-   - Do NOT extend the conversation unnecessarily
-   - Do NOT repeat their greeting back
-   - Do NOT explain what you can do unless asked
-   - Do NOT use overly formal language
+    - Do NOT ask multiple questions
+    - Do NOT extend the conversation unnecessarily
+    - Do NOT repeat their exact greeting back word-for-word
+    - Do NOT talk about your own feelings or how you are doing
+    - Do NOT use slang or jokes
 
 # EXAMPLES OF GOOD RESPONSES
-- "Hello! I'm here to help you today. What can I assist you with?"
-- "Hi there! How can I support you?"
-- "Good to hear from you! What brings you here today?"
+- "Hello, how can I assist you today?"  (for first greetings like "hi")
+- "Good day. How may I help you?"  (for first greetings like "hello")
+- "You’re welcome. If you need anything else later, feel free to ask."  (after messages like "ok" or "thanks")
+- "Of course, no problem. Reach out anytime if you need help."  (after messages like "not now" or "ok, no issue")
 
 # OUTPUT FORMAT
 Provide ONLY your direct response to the user. No preamble, no explanation.
@@ -318,7 +325,56 @@ Provide your acknowledgment, then add the action tag on a new line.
             "requests with patience and clarity."
         )
 
-        template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+        # If fallback_count >= 2, escalate to contact details message
+        import inspect
+        fallback_count = 0
+        # Try to get fallback_count from caller if passed
+        frame = inspect.currentframe()
+        if frame is not None:
+            outer = frame.f_back
+            if outer and 'fallback_count' in outer.f_locals:
+                fallback_count = outer.f_locals['fallback_count']
+
+        if fallback_count >= 3:
+            template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+# ROLE AND PERSONALITY
+{personality}
+
+# SITUATION
+The user's request is unclear, ambiguous, or outside your scope.
+
+User message: "{user_message}"
+
+# YOUR TASK
+Let the user know you are unable to answer after several attempts and politely ask them to provide their contact details so a human team member can follow up.
+
+# RESPONSE RULES
+1. TONE: Patient, helpful, non-judgmental
+2. LENGTH: 2-3 sentences maximum
+3. APPROACH:
+   - Acknowledge their message
+   - Politely explain you couldn't answer after several tries
+   - Ask for contact details for follow-up
+4. CONSTRAINTS:
+   - Do NOT guess at their intent
+   - Do NOT provide generic lists of what you can do
+   - Do NOT apologize excessively
+
+# EXAMPLES OF GOOD RESPONSES
+- "I'm sorry I couldn't answer your question after several tries. Please provide your contact details and our team will reach out to you."
+- "It looks like I wasn't able to help with your request. If you'd like, please share your contact information and a team member will follow up."
+
+# OUTPUT FORMAT
+Provide ONLY your direct response to the user.
+
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{user_message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+"""
+        else:
+            template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
 # ROLE AND PERSONALITY
 {personality}
@@ -370,7 +426,8 @@ def build_augmented_system_instruction(
     user_message: str,
     knowledge_base: Optional[str] = None,
     custom_instruction: Optional[str] = None,
-    intent: Optional[str] = None
+    intent: Optional[str] = None,
+    fallback_count: int = 0
 ) -> Dict[str, any]:
     """
     Automatically route user message to appropriate prompt template.
@@ -390,8 +447,22 @@ def build_augmented_system_instruction(
     router = get_hybrid_classifier()
     # breakpoint()
     try:
-        # Intent classification
-        if intent is None:
+        # Special-case: user explicitly says they have no questions
+        normalized = (user_message or "").strip().lower()
+        no_question_phrases = [
+            "i dont have any questions",
+            "i don't have any questions",
+            "i do not have any questions",
+            "i dont have questions",
+            "i don't have questions",
+            "no questions",
+        ]
+
+        if intent is None and any(p in normalized for p in no_question_phrases):
+            detected_intent = "greeting"
+            confidence_data = {"greeting": 1.0}
+        elif intent is None:
+            # Normal intent classification
             detected_intent, confidence_data, _ = router.classify(
                 user_message, return_scores=True
             )
@@ -404,7 +475,15 @@ def build_augmented_system_instruction(
             confidence_score = confidence_data.get(detected_intent, 0.0)
         else:
             confidence_score = float(confidence_data)
-        if detected_intent != "normal_qa" and confidence_score < 0.5:
+
+        # Rely mainly on the classifier, but still guard against
+        # extremely low-confidence non-"normal_qa" routes.
+        # For scheduler/agent_request, allow slightly lower scores
+        # so requests like "arrange call from sales" don't fall
+        # back to normal_qa too aggressively.
+        min_confidence = 0.30 if detected_intent in {"scheduler", "agent_request"} else 0.40
+
+        if detected_intent != "normal_qa" and confidence_score < min_confidence:
             logger.warning(
                 "Low confidence for intent=%s (%.2f), defaulting to normal_qa",
                 detected_intent, confidence_score
@@ -418,13 +497,20 @@ def build_augmented_system_instruction(
 
         # Route to appropriate prompt
         if detected_intent == "normal_qa":
-            system_msg = prompts.build_qa_prompt(
-                knowledge_base or "",
-                user_message,
-                custom_instruction,
-                history,
-            )
-            max_tokens = 600
+            # If fallback_count >= 2, use fallback prompt directly
+            if fallback_count >= 2:
+                system_msg = prompts.build_fallback_prompt(
+                    custom_instruction, user_message
+                )
+                max_tokens = 100
+            else:
+                system_msg = prompts.build_qa_prompt(
+                    knowledge_base or "",
+                    user_message,
+                    custom_instruction,
+                    history,
+                )
+                max_tokens = 600
             
         elif detected_intent == "greeting":
             system_msg = prompts.build_greeting_prompt(
