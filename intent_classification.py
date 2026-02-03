@@ -76,7 +76,10 @@ class SemanticRouteClassifier:
                     'can I talk to a person', 'live agent please',
                     'human support needed', 'switch to human', 'real person please',
                     'operator please', 'I need to speak with someone',
-                    'connect me to a person', 'talk to customer service'
+                    'connect me to a person', 'talk to customer service',
+                    'i want to talk to sales', 'i want call from sales',
+                    'i want to talk sales team', 'i want to talk sales',
+                    'talk to sales', 'talk to sales team'
                 ],
                 patterns=[
                     r'\b(speak|talk|connect|transfer|escalate)\s+(to|with|me\s+(to|with))\s+(an?\s+)?(agent|human|representative|someone|person|operator)\b',
@@ -86,13 +89,17 @@ class SemanticRouteClassifier:
                     r'\b(customer\s+service|support|live)\s+(agent|representative|person)\b',
                     r'\b(human|real\s+person|operator)\s+(please|now|needed|support)\b',
                     r'\bswitch\s+to\s+(a\s+)?(human|agent|person)\b',
-                    r'\blet\s+me\s+(talk|speak)\s+to\s+(a\s+)?(human|agent|person|someone)\b'
+                    r'\blet\s+me\s+(talk|speak)\s+to\s+(a\s+)?(human|agent|person|someone)\b',
+                    r'\b(talk|speak)\s+to\s+(sales|salesperson|sales\s+team)\b',
+                    r'\b(need|want)\s+(to\s+)?(talk|speak)\s+(to\s+)?(sales|salesperson|sales\s+team)\b'
                 ],
                 keywords=['agent', 'human', 'representative', 'transfer', 'connect', 'speak', 'escalate', 
-                         'operator', 'live agent', 'customer service', 'real person'],
+                         'operator', 'live agent', 'customer service', 'real person',
+                         'sales', 'salesperson', 'sales team'],
                 phrase_patterns=['speak to agent', 'talk to human', 'connect me', 'transfer me', 
                                'real person', 'human help', 'customer service', 'live agent', 
-                               'need agent', 'want agent', 'need human', 'talk to agent']
+                               'need agent', 'want agent', 'need human', 'talk to agent',
+                               'talk to sales', 'talk to sales team', 'call from sales']
             ),
             
             'scheduler': Route(
@@ -108,8 +115,6 @@ class SemanticRouteClassifier:
                     'set up a meeting time', 'reserve a time', 'book a session', 
                     'schedule a call', 'arrange an appointment', 'when can I come in',
                     'make an appointment', 'schedule me in',
-                    'arrange a call from sales', 'schedule a sales call',
-                    'I want a call from the sales team', 'book a call with sales',
                     'i want to schedule my meeting', 'i want to schedule a meeting',
                     'want to schedule meeting', 'schedule my meeting', 'book my appointment'
                 ],
@@ -123,15 +128,12 @@ class SemanticRouteClassifier:
                     r'\bschedule\s+me\s+(in|for)\b',
                     r'\bschedule\s+(my|a|an|the)?\s*(meeting|appointment|call|session)\b',
                     r'\bbook\s+(my|a|an|the)?\s*(meeting|appointment|call|session)\b',
-                    r'\b(call|meeting)\b.*\b(sales|salesperson|sales\s+team)\b',
                 ],
                 keywords=['appointment', 'schedule', 'book', 'meeting', 'consultation', 'visit', 
-                         'reservation', 'calendar', 'time slot', 'reserve', 'arrange', 'session', 'availability', 'call',
-                         'sales', 'salesperson', 'sales team'],
+                         'reservation', 'calendar', 'time slot', 'reserve', 'arrange', 'session', 'availability', 'call'],
                 phrase_patterns=['book appointment', 'schedule meeting', 'make appointment', 'set up meeting',
                                'reserve time', 'book session', 'schedule visit', 'appointment slot',
-                               'want to schedule', 'need to schedule', 'schedule my', 'book my',
-                               'sales call', 'call from sales', 'call with sales']
+                               'want to schedule', 'need to schedule', 'schedule my', 'book my']
             ),
             
             'normal_qa': Route(
@@ -379,6 +381,19 @@ class SemanticRouteClassifier:
         
         best_route = max(scores, key=scores.get)
         confidence = scores[best_route]
+
+        # If TF-IDF thinks this is an agent_request but the user
+        # never mentioned any human/agent/support words, treat it
+        # as a normal QA question instead of escalating.
+        if best_route == 'agent_request':
+            words = set(self._tokenize(preprocessed_query))
+            agent_markers = {
+                'agent', 'human', 'representative', 'operator', 'someone',
+                'person', 'support', 'customer', 'service', 'sales', 'team'
+            }
+            if not any(k in words for k in agent_markers):
+                best_route = 'normal_qa'
+                confidence = scores['normal_qa']
         
         max_specific_score = max(
             scores.get('greeting', 0.0),
@@ -471,6 +486,10 @@ class BERTIntentClassifier:
                     'switch to human',
                     'operator please',
                     'get me an agent now',
+                    'I want to talk to sales',
+                    'I want a call from sales',
+                    'I want to talk to the sales team',
+                    'let me talk to sales now',
                 ],
                 patterns=[], keywords=[], phrase_patterns=[]
             ),
@@ -496,10 +515,6 @@ class BERTIntentClassifier:
                     'I want to schedule my meeting',
                     'I need to book a meeting',
                     'schedule my appointment',
-                    'arrange a call from sales',
-                    'schedule a sales call',
-                    'I want a call from the sales team',
-                    'book a call with sales',
                 ],
                 patterns=[], keywords=[], phrase_patterns=[]
             ),
@@ -579,6 +594,60 @@ class BERTIntentClassifier:
         if not query or not query.strip():
             return 'normal_qa', 0.0, {}
         
+        # ------------------------------------------------------------------
+        # Heuristic routing for call vs. schedule semantics
+        # - Immediate "talk/call now" b agent_request
+        # - Explicit booking/scheduling or future-time calls b scheduler
+        # ------------------------------------------------------------------
+        q_lower = query.lower()
+
+        # Include common misspellings ("shedule", "tommorow") and
+        # generic booking words.
+        schedule_keywords = [
+            'schedule', 'scheduled', 'scheduling', 'shedule', 'booking',
+            'book', 'appointment', 'reserve', 'reservation', 'slot',
+            'time slot', 'reschedule'
+        ]
+        call_keywords = ['call', 'phone', 'meeting', 'session']
+        human_keywords = [
+            'agent', 'human', 'representative', 'person', 'someone',
+            'support', 'customer service', 'sales', 'sales team', 'salesperson'
+        ]
+        # Future-time indicators so phrases like "call tomorrow",
+        # "call after next 2 days" route to scheduler.
+        future_time_keywords = [
+            'tomorrow', 'tommorow', 'next ', 'later', 'after ',
+            'in ', 'day after tomorrow'
+        ]
+
+        has_schedule_word = any(k in q_lower for k in schedule_keywords)
+        has_call = any(k in q_lower for k in call_keywords)
+        has_human = any(k in q_lower for k in human_keywords)
+        has_future_time = any(k in q_lower for k in future_time_keywords)
+
+        # If user explicitly talks about scheduling/booking OR clearly
+        # mentions a future time with a call/meeting b scheduler.
+        if has_call and (has_schedule_word or has_future_time):
+            if return_scores:
+                return 'scheduler', 0.95, {
+                    'method': 'bert_rule',
+                    'reason': 'schedule_or_future_call_heuristic'
+                }
+            return 'scheduler', 0.95, {}
+
+        # If user wants to talk/call a human (including sales) and
+        # there is no scheduling / future-time language b agent_request.
+        if has_call and has_human and not (has_schedule_word or has_future_time):
+            if return_scores:
+                return 'agent_request', 0.95, {
+                    'method': 'bert_rule',
+                    'reason': 'immediate_call_heuristic'
+                }
+            return 'agent_request', 0.95, {}
+
+        # ------------------------------------------------------------------
+        # Default: use BERT similarity across routes
+        # ------------------------------------------------------------------
         query_embedding = self._get_embedding(query)
         
         similarities = {}
@@ -588,6 +657,18 @@ class BERTIntentClassifier:
         
         best_route = max(similarities, key=similarities.get)
         confidence = similarities[best_route]
+
+        # If BERT picks agent_request but there are no explicit
+        # human/agent/support markers in the text, prefer normal_qa.
+        if best_route == 'agent_request':
+            q_words = set(re.findall(r"\w+", query.lower()))
+            agent_markers = {
+                'agent', 'human', 'representative', 'operator', 'someone',
+                'person', 'support', 'customer', 'service', 'sales', 'team'
+            }
+            if not any(k in q_words for k in agent_markers):
+                best_route = 'normal_qa'
+                confidence = similarities['normal_qa']
         
         max_specific_score = max(
             similarities.get('greeting', 0.0),
@@ -683,6 +764,33 @@ class HybridIntentClassifier:
         """
         if not query or not query.strip():
             return 'normal_qa', 0.0, {}
+
+        # ------------------------------------------------------------------
+        # Early guard: user explicitly says they want to talk to "you" or
+        # "bot" but does NOT mention any human/agent/support words.
+        # In this case, keep them with the bot (normal_qa) rather than
+        # escalating to a human agent.
+        # ------------------------------------------------------------------
+        q_lower = query.lower()
+        talk_markers = ['talk', 'speak', 'chat']
+        bot_targets = [' you', 'you ', ' bot', 'bot ']
+        human_markers = [
+            'agent', 'human', 'representative', 'operator', 'someone',
+            'person', 'support', 'customer service', 'customer-care',
+            'customer care', 'sales', 'sales team', 'salesperson'
+        ]
+
+        mentions_talk = any(t in q_lower for t in talk_markers)
+        mentions_bot_target = any(b in q_lower for b in bot_targets)
+        mentions_human = any(h in q_lower for h in human_markers)
+
+        if mentions_talk and mentions_bot_target and not mentions_human:
+            if return_scores:
+                return 'normal_qa', 0.95, {
+                    'method': 'hybrid_rule',
+                    'reason': 'talk_to_bot_or_you_guard'
+                }
+            return 'normal_qa', 0.95, {}
         
         # Step 1: Try TF-IDF first (fast path)
         route, confidence, tfidf_details = self.tfidf_classifier.classify(query, return_scores=True)

@@ -300,77 +300,77 @@ async def generate_and_stream_ai_response(
 
             # Count fallback responses in history
             fallback_count = 0
-            fallback_phrases = [
-                "don't have enough information",
-                "unable to answer",
-                "please share your contact details",
-                "provide your contact information",
-                "not able to find any information",
-                "i'm sorry i couldn't answer",
-                "i'm sorry, i don't have enough information",
-                "i'm having trouble understanding your question",
-                "i'm not sure i can find any information",
-                "i'm going to need a bit more information",
-                "i need a bit more information",
-                "could you clarify",
-                "could you provide more context",
-                "can you please provide more context",
-                "i'd be happy to help, but i need a bit more information",
-                "to assist you better, could you let me know more",
-                "i want to make sure i understand correctly",
-                "i'd be happy to help! could you clarify",
-                "i'd be happy to help, but i need a bit more context",
-                "i'm still not sure who or what",
-                "i'm not familiar with the name",
-                "i'm having trouble finding any relevant information",
-                "i'm still unclear about what you're looking for",
-                   "don't have enough information",
-                        "unable to answer",
-                        "please share your contact",
-                        "provide your contact",
-                        "not able to find any information",
-                        "sorry i couldn't answer",
-                        "sorry, i don't have enough information",
-                        "having trouble understanding",
-                        "not sure i can find any information",
-                        "need a bit more information",
-                        "could you clarify",
-                        "could you provide more context",
-                        "can you please provide more context",
-                        "i'd be happy to help, but i need",
-                        "to assist you better, could you let me know more",
-                        "make sure i understand",
-                        "could you rephrase",
-                        "not sure i understand",
-                        "still unclear",
-                        "not familiar with the name",
-                        "having trouble finding any relevant information",
-                        "better assist you",
-                        "could you please rephrase",
-                        "i'm not sure i understand",
-                        "i'm not sure what you're looking for",
-                        "i'm still not sure",
-                        "i'm still unclear",
-                        "i'm not familiar with",
-                        "i'm having trouble finding",
-                        "i'm having trouble understanding",
-                        "i'm not sure i can help",
-                        "i'm not sure how to help",
-                        "i'm not sure i can answer",
-                        "i'm not sure i have enough information",
-                        "i'm not sure i understand what you're looking for",
+            # fallback_phrases = [
+            #     "don't have enough information",
+            #     "unable to answer",
+            #     "please share your contact details",
+            #     "provide your contact information",
+            #     "not able to find any information",
+            #     "i'm sorry i couldn't answer",
+            #     "i'm sorry, i don't have enough information",
+            #     "i'm having trouble understanding your question",
+            #     "i'm not sure i can find any information",
+            #     "i'm going to need a bit more information",
+            #     "i need a bit more information",
+            #     "could you clarify",
+            #     "could you provide more context",
+            #     "can you please provide more context",
+            #     "i'd be happy to help, but i need a bit more information",
+            #     "to assist you better, could you let me know more",
+            #     "i want to make sure i understand correctly",
+            #     "i'd be happy to help! could you clarify",
+            #     "i'd be happy to help, but i need a bit more context",
+            #     "i'm still not sure who or what",
+            #     "i'm not familiar with the name",
+            #     "i'm having trouble finding any relevant information",
+            #     "i'm still unclear about what you're looking for",
+            #        "don't have enough information",
+            #             "unable to answer",
+            #             "please share your contact",
+            #             "provide your contact",
+            #             "not able to find any information",
+            #             "sorry i couldn't answer",
+            #             "sorry, i don't have enough information",
+            #             "having trouble understanding",
+            #             "not sure i can find any information",
+            #             "need a bit more information",
+            #             "could you clarify",
+            #             "could you provide more context",
+            #             "can you please provide more context",
+            #             "i'd be happy to help, but i need",
+            #             "to assist you better, could you let me know more",
+            #             "make sure i understand",
+            #             "could you rephrase",
+            #             "not sure i understand",
+            #             "still unclear",
+            #             "not familiar with the name",
+            #             "having trouble finding any relevant information",
+            #             "better assist you",
+            #             "could you please rephrase",
+            #             "i'm not sure i understand",
+            #             "i'm not sure what you're looking for",
+            #             "i'm still not sure",
+            #             "i'm still unclear",
+            #             "i'm not familiar with",
+            #             "i'm having trouble finding",
+            #             "i'm having trouble understanding",
+            #             "i'm not sure i can help",
+            #             "i'm not sure how to help",
+            #             "i'm not sure i can answer",
+            #             "i'm not sure i have enough information",
+            #             "i'm not sure i understand what you're looking for",
                     
-            ]
+            # ]
        
-            for m in history or []:
-                if (
-                    isinstance(m, dict)
-                    and m.get("role") == "assistant"
-                ):
-                    content = m.get("content", "").lower()
-                    # Use substring matching for more robust fallback detection
-                    if any(phrase in content for phrase in fallback_phrases):
-                        fallback_count += 1
+            # for m in history or []:
+            #     if (
+            #         isinstance(m, dict)
+            #         and m.get("role") == "assistant"
+            #     ):
+            #         content = m.get("content", "").lower()
+            #         # Use substring matching for more robust fallback detection
+            #         if any(phrase in content for phrase in fallback_phrases):
+            #             fallback_count += 1
             
             prompt_dict = build_augmented_system_instruction(
                 history=history,
@@ -378,6 +378,7 @@ async def generate_and_stream_ai_response(
                 knowledge_base=knowledge_base,
                 custom_instruction=tenant_custom_instruction,
                 fallback_count=fallback_count,
+                # fallback_count=0
             )
 
            
@@ -388,9 +389,9 @@ async def generate_and_stream_ai_response(
             logger.debug("Detected intent: %s", action)
             logger.debug("Final system prompt prepared")
              # If fallback_count >= 4, set action to 'fallback_max' for escalation
-            if fallback_count >= 3:
-                # breakpoint()
-                action = "fallback_max"
+            # if fallback_count >= 3:
+            #     # breakpoint()
+            #     action = "fallback_max"
 
             # Build full message list for the LLM: system -> prior turns -> current user
             messages: list[dict] = [prompt_dict["system_message"]]
