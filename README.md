@@ -55,4 +55,21 @@ This project is a production-ready AI microservice for building SaaS-based chatb
 - `PINECONE_INDEX` — Pinecone index name
 - `REDIS_URL` — Redis connection string (default: `redis://localhost:6379/0`)
 - (See `.env.example` for more)
+4300
+615
+1385
+140
+390
+300
+1400
+150
+1360
+100
+120
+
+
+
+10260 for five
+
+482 + 241 + 510 + 840 = 2073
 
