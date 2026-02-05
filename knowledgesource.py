@@ -121,43 +121,6 @@ def clean_chunk(text: str) -> str:
 
 
 
-# async def background_embedding_job(
-#     cleaned_chunks: List[str],
-#     knowledge_source_id: str,
-#     bot_id: str,
-#     file_name: str,
-# ):
-#     embeddings = await embed_content_batch(cleaned_chunks)
-
-#     # Preserve alignment between chunks and embeddings; skip failed ones (None)
-#     vectors = []
-#     for chunk, emb in zip(cleaned_chunks, embeddings):
-#         if not emb:
-#             continue
-#         vectors.append(
-#             {
-#                 "id": str(uuid.uuid4()),
-#                 "values": emb,
-#                 "metadata": {
-#                     "sourceId": knowledge_source_id,
-#                     "botId": bot_id,
-#                     "fileName": file_name,
-#                     "content": chunk,
-#                 },
-#             }
-#         )
-
-#     # Pinecone is blocking → run in thread to avoid blocking event loop
-#     await asyncio.to_thread(
-#         index.upsert,
-#         vectors=vectors,
-#         namespace=bot_id
-#     )
-
-#     print(f"[EMBEDDING DONE] {file_name} -> {len(vectors)}/{len(cleaned_chunks)} chunks")
-
-
-
 import uuid
 import asyncio
 import logging
