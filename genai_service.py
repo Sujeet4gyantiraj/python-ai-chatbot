@@ -347,8 +347,7 @@ async def generate_and_stream_ai_response(
 
             # ---------------- POST PROCESS ----------------
             clean_text = clean_llm_output(full_text)
-            print("Clean LLM outputttttttttttttttttttttttttttttt:", clean_text)
-            print("Actionkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk:", action , fallback_count)
+           
 
             # If the model returned the explicit knowledge-base fallback message,
             # mark the action as a fallback so the caller can handle it specially.
@@ -363,6 +362,82 @@ async def generate_and_stream_ai_response(
                 normalized_fallback = " ".join(kb_fallback_message.split()).lower()
                 if normalized_fallback in normalized_clean:
                     action = "fallback_msg"
+
+            # ---------------- UNSATISFIED USER HANDLING ----------------
+            # If the user keeps saying the previous answer is not what
+            # they want (e.g., "no, I want other services"), ensure we
+            # add a contact-details sentence and mark as fallback_msg.
+            unsatisfied_phrases = [
+                # Direct rejections
+                "no i want other services",
+                "no i want more services",
+                "no i want new services",
+                "no this is not what i asked",
+                "no this is not what i want",
+                "this is not what i asked",
+                "this is not what i want",
+                "this does not answer my question",
+                "you didn't answer my question",
+                "you did not answer my question",
+                "this is not helpful",
+                "not helpful",
+                "not satisfied",
+            ]
+
+            def _normalize(text: str) -> str:
+                return " ".join(text.lower().split())
+
+            is_unsatisfied = False
+            current_norm = _normalize(user_query) if user_query else ""
+
+            # 1) Check current message for explicit dissatisfaction phrases
+            if any(p in current_norm for p in unsatisfied_phrases):
+                is_unsatisfied = True
+            else:
+                # 2) Check a few recent user turns for dissatisfaction
+                last_user_texts: list[str] = []
+                for h in history or []:
+                    if isinstance(h, dict) and h.get("role") == "user":
+                        content = str(h.get("content", "")).strip()
+                        if content:
+                            last_user_texts.append(content)
+                last_user_texts = last_user_texts[-3:]
+                for txt in last_user_texts:
+                    norm_txt = _normalize(txt)
+                    if any(p in norm_txt for p in unsatisfied_phrases):
+                        is_unsatisfied = True
+                        break
+
+            # 3) If the user keeps insisting on "new/other/more services"
+            # after we already answered about services, treat that as
+            # dissatisfaction as well.
+            if not is_unsatisfied and current_norm:
+                wants_more_services = any(
+                    phrase in current_norm
+                    for phrase in [
+                        "i want new services",
+                        "i want other services",
+                        "i want more services",
+                    ]
+                )
+                if wants_more_services:
+                    # Check if we already talked about services in previous
+                    # assistant replies.
+                    for h in history or []:
+                        if isinstance(h, dict) and h.get("role") == "assistant":
+                            a_content = str(h.get("content", ""))
+                            if "services" in _normalize(a_content):
+                                is_unsatisfied = True
+                                break
+
+            if is_unsatisfied and clean_text:
+                norm_clean = _normalize(clean_text)
+                # Only append if the contact-details line isn't already there
+                if "please provide your contact details" not in norm_clean:
+                    contact_line = "Please provide your contact details and our team will connect with you shortly."
+                    clean_text = f"{clean_text.rstrip()} {contact_line}"
+                action = "fallback_msg"
+
             if action == "greeting":
                 clean_text = extract_before_hash(clean_text)
             
@@ -373,7 +448,8 @@ async def generate_and_stream_ai_response(
             await save_chat_history(bot_id, session_id, history, k=10)
 
             logger.info("Chat response generated successfully")
-
+            print("Clean LLM outputttttttttttttttttttttttttttttt:", clean_text)
+            print("Actionkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk:", action , fallback_count)
             return {
                 "fullText": full_text,
                 "cleanText": clean_text,

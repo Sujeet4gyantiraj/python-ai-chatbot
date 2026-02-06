@@ -76,13 +76,13 @@ class LLMService:
             top_p=top_p,
             max_tokens=max_tokens
         )
-
+        
         messages = self._convert_messages(messages_data)
         # breakpoint()
         response = chat.invoke(messages)
          
         text_out = getattr(response, "content", str(response)).strip()
-
+        print("Converted messages for LLMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMm:", self.chat_model)
         return {
             "generated_text": text_out,
             "finish_reason": "stop",
