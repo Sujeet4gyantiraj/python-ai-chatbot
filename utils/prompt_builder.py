@@ -553,36 +553,27 @@ def build_augmented_system_instruction(
 
 
 def format_prompt_for_llama3(messages: list[dict], max_chars: int = 8000) -> str:
-    """Deprecated — kept for backward compat. Use format_prompt_for_chat."""
-    return format_prompt_for_chat(messages, max_chars)
-
-
-def format_prompt_for_chat(messages: list[dict], max_chars: int = 8000) -> str:
     """
-    Format conversation messages using ChatML template (Qwen 2.5 native).
-
-    Also works with any model whose tokenizer applies its own chat
-    template (LangChain ChatHuggingFace handles that automatically,
-    so this function is only needed for raw-text endpoints).
-
+    Format conversation messages for Llama 3.1 with proper chat template.
+    
     Args:
         messages: List of message dicts with 'role' and 'content'
         max_chars: Maximum character limit for the prompt
-
+    
     Returns:
-        Formatted prompt string in ChatML format
+        Formatted prompt string ready for Llama 3.1
     """
-    prompt = ""
-
+    prompt = "<|begin_of_text|>"
+    
     for msg in messages:
         role = msg.get("role", "user")
         content = msg.get("content", "")
-
+        
         prompt += (
-            f"<|im_start|>{role}\n"
-            f"{content}<|im_end|>\n"
+            f"<|start_header_id|>{role}<|end_header_id|>\n\n"
+            f"{content}<|eot_id|>"
         )
-
+        
         # Truncation check
         if len(prompt) > max_chars:
             logger.warning(
@@ -591,8 +582,8 @@ def format_prompt_for_chat(messages: list[dict], max_chars: int = 8000) -> str:
             )
             prompt = prompt[:max_chars]
             break
-
+    
     # Add assistant header for generation
-    prompt += "<|im_start|>assistant\n"
-
+    prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n"
+    
     return prompt

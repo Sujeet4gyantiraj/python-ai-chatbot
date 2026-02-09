@@ -17,14 +17,14 @@ class LLMService:
 
     def __init__(self):
         # Allow overriding the model via env, fall back to previous default.
-        model_id = os.getenv("GENAI_MODEL_ID", "Qwen/Qwen2.5-14B-Instruct")
+        model_id = os.getenv("GENAI_MODEL_ID", "meta-llama/Llama-3.1-8B-Instruct")
 
         # Default generation settings; can be overridden per-call.
         # Note: we intentionally do NOT pass max_new_tokens to the
         # Hugging Face chat API, because some providers (e.g. novita)
         # don't support that argument on chat_completion.
         self.default_max_new_tokens = int(os.getenv("GENAI_MAX_TOKENS", "512"))
-        self.default_temperature = float(os.getenv("GENAI_TEMPERATURE", "0.3"))
+        self.default_temperature = float(os.getenv("GENAI_TEMPERATURE", "0.6"))
         self.default_top_p = float(os.getenv("GENAI_TOP_P", "0.9"))
 
         print(f"Loading LangChain HuggingFaceEndpoint chat model: {model_id} ...")

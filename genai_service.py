@@ -258,19 +258,25 @@ async def generate_and_stream_ai_response(
         session_id,
     )
 
-    # If user details are provided in the payload, MERGE with existing stored data
-    # (never overwrite a saved phone/email with empty values)
-    if user_details:
-        non_empty = {k: v for k, v in dict(user_details).items() if v}
-        if non_empty:
+    # If user details are provided in the payload, persist them
+    # Only save when the payload actually contains non-null values
+    if user_details and any(v for v in user_details.values() if v):
+        try:
+            # Merge with existing stored contact so we don't overwrite
+            # phone collected during chat with an empty payload
+            existing = None
             try:
                 existing = await load_contact_details(bot_id, session_id)
-                merged = dict(existing) if existing else {}
-                merged.update(non_empty)
-                await save_contact_details(bot_id, session_id, merged)
-                logger.info("User details merged from payload | bot_id=%s | session_id=%s", bot_id, session_id)
             except Exception:
-                logger.exception("Failed to save user details from payload")
+                pass
+            merged = dict(existing) if existing else {}
+            for k, v in user_details.items():
+                if v:  # only overwrite with non-null values
+                    merged[k] = v
+            await save_contact_details(bot_id, session_id, merged)
+            logger.info("User details saved from payload | bot_id=%s | session_id=%s", bot_id, session_id)
+        except Exception:
+            logger.exception("Failed to save user details from payload")
 
     try:
         full_text = ""
@@ -288,17 +294,31 @@ async def generate_and_stream_ai_response(
             except Exception:
                 stored_contact = None
 
-            # Determine if we already know the user's phone or email
+            # Determine if we already know the user's phone
             known_phone = (
                 _phone_from_dict(stored_contact)
                 or _phone_from_dict(user_details)
             )
-            known_email = (
-                (stored_contact or {}).get("email")
-                or (user_details or {}).get("email")
-            )
-            contact_on_file = bool(known_phone or known_email)
-            contact_confirmed = bool((stored_contact or {}).get("confirmed"))
+
+            # Check if contact was CONFIRMED in this session
+            # (user said "yes" to confirmation → bot replied with "thank you for confirming")
+            # Only then do we stop showing the number for re-confirmation
+            _contact_confirmed_sigs = [
+                "thank you for confirming your number",
+            ]
+            contact_already_collected = False
+            # Also check the Redis confirmed flag
+            if stored_contact and isinstance(stored_contact, dict) and stored_contact.get("confirmed"):
+                contact_already_collected = True
+            else:
+                for h in (history or []):
+                    if (
+                        isinstance(h, dict)
+                        and h.get("role") == "assistant"
+                        and any(sig in _norm(str(h.get("content", ""))) for sig in _contact_confirmed_sigs)
+                    ):
+                        contact_already_collected = True
+                    break
 
             norm_query = _norm(user_query) if user_query else ""
 
@@ -318,6 +338,7 @@ async def generate_and_stream_ai_response(
             # ============================================================
             confirm_markers = [
                 "we already have your contact number as",
+                "we've updated your contact number to",
                 "is this correct",
             ]
             if any(m in norm_last for m in confirm_markers):
@@ -328,14 +349,16 @@ async def generate_and_stream_ai_response(
                     "that's correct", "ok", "okay", "confirmed", "confirm",
                 ]
                 if any(y in norm_query for y in yes_phrases):
-                    # Mark contact as confirmed in Redis
+                    # Mark the stored contact as confirmed
                     try:
-                        _cd = (await load_contact_details(bot_id, session_id)) or {}
-                        _cd["confirmed"] = True
-                        await save_contact_details(bot_id, session_id, _cd)
+                        existing = await load_contact_details(bot_id, session_id)
+                        if existing and isinstance(existing, dict):
+                            existing["confirmed"] = True
+                            await save_contact_details(bot_id, session_id, existing)
                     except Exception:
-                        pass
-                    reply = "Thank you for confirming your number. Our team will contact you shortly."
+                        logger.exception("Failed to mark contact as confirmed")
+
+                    reply = "Thank you for confirming your number. Our team will connect with you shortly."
                     history.append({"role": "user", "content": user_query})
                     history.append({"role": "assistant", "content": reply})
                     await save_chat_history(bot_id, session_id, history, k=10)
@@ -372,25 +395,38 @@ async def generate_and_stream_ai_response(
                 email = _extract_email(user_query)
 
                 if phone or email:
-                    contact_payload: Dict[str, Any] = {"raw": user_query}
+                    # Merge new details into existing stored contact
+                    contact_payload: Dict[str, Any] = {}
+                    try:
+                        existing = await load_contact_details(bot_id, session_id)
+                        if existing and isinstance(existing, dict):
+                            contact_payload = dict(existing)
+                    except Exception:
+                        pass
+                    contact_payload["raw"] = user_query
                     if phone:
                         contact_payload["phone"] = phone
                     if email:
                         contact_payload["email"] = email
+                    # Clear the confirmed flag so user must re-confirm
+                    contact_payload.pop("confirmed", None)
 
                     try:
-                        # Merge with existing data
-                        _existing = (await load_contact_details(bot_id, session_id)) or {}
-                        _existing.update(contact_payload)
-                        await save_contact_details(bot_id, session_id, _existing)
+                        await save_contact_details(bot_id, session_id, contact_payload)
                     except Exception:
                         logger.exception("Failed to save contact details")
 
-                    reply = "Thank you for providing your information. Our team will contact you soon."
+                    # Show the new number back for confirmation
+                    # (cycle continues until user says "yes")
+                    saved_num = phone or email
+                    reply = (
+                        f"Thank you. We've updated your contact number to {saved_num}. "
+                        "Is this correct? If not, please share the correct number."
+                    )
                     history.append({"role": "user", "content": user_query})
                     history.append({"role": "assistant", "content": reply})
                     await save_chat_history(bot_id, session_id, history, k=10)
-                    return {"fullText": reply, "cleanText": reply, "action": "contact_saved"}
+                    return {"fullText": reply, "cleanText": reply, "action": "contact_updated"}
 
             # ============================================================
             # 4. INTERCEPT: Short acknowledgements ("ok", "okay", "thanks")
@@ -406,9 +442,7 @@ async def generate_and_stream_ai_response(
             thank_markers = [
                 "our team will contact you",
                 "our team will connect with you",
-                "we've received your details",
-                "a representative will be in touch",
-                "thank you for confirming your number",
+                "our team will reach out to you",
             ]
             if any(m in norm_last for m in thank_markers) and any(a in norm_query for a in ack_markers):
                 reply = "Great, I'm glad that's all set. If you need anything else, just let me know."
@@ -522,33 +556,21 @@ async def generate_and_stream_ai_response(
             # 7. KB EMPTY + NORMAL_QA → FALLBACK (no LLM call needed)
             # ============================================================
             if not has_kb and action == "normal_qa":
-                # Check if contact was explicitly confirmed in this session
-                _confirmed_sigs = [
-                    "thank you for confirming your number",
-                ]
-                _contact_already_confirmed = False
-                for h in reversed(history or []):
-                    if isinstance(h, dict) and h.get("role") == "assistant":
-                        hc = _norm(str(h.get("content", "")))
-                        if any(sig in hc for sig in _confirmed_sigs):
-                            _contact_already_confirmed = True
-                            break
-
-                if _contact_already_confirmed or contact_confirmed:
-                    # Contact already saved — don't ask again
-                    fallback_reply = (
-                        "I'm sorry, I don't have that information available in our system right now. "
-                        "Our team already has your contact details and will reach out to you shortly."
-                    )
-                elif known_phone:
-                    # We have the user's phone but haven't confirmed yet → ask for confirmation
+                if known_phone:
+                    # We have the user's phone → show it and ask for confirmation
                     fallback_reply = (
                         "I'm sorry, I don't have that information available in our system right now. "
                         f"We already have your contact number as {known_phone}. "
                         "Is this correct? If not, please share the correct number so our team can reach out to you."
                     )
+                elif contact_already_collected:
+                    # Contact collected but no phone on record
+                    fallback_reply = (
+                        "I'm sorry, I don't have that information available in our system right now. "
+                        "We already have your contact details on file and our team will reach out to you shortly."
+                    )
                 else:
-                    # No phone on file → ask for contact details
+                    # No contact info at all → ask for contact details
                     fallback_reply = (
                         "I'm sorry, I don't have that information available in our system right now. "
                         "If you'd like, please share your contact details and our team will connect with you shortly."
@@ -598,51 +620,25 @@ async def generate_and_stream_ai_response(
                 fallback_phrases = [
                     "share your contact details and our team will connect with you shortly",
                     "provide your contact details and our team will connect with you shortly",
-                    "please provide your contact details and our team will connect",
-                    "please share your contact details and our team will connect",
                     "i don't have enough information to answer that right now",
                     "i don't have that information available in our system right now",
                 ]
-                # Also detect when LLM asks for contact details in any form
-                _contact_ask_patterns = [
-                    "please provide your contact details",
-                    "please share your contact details",
-                    "share your contact details",
-                    "provide your contact details",
-                    "please share your contact number",
-                    "provide your contact number",
-                ]
-                is_fallback_like = any(fp in nc for fp in fallback_phrases)
-                has_contact_ask = any(cp in nc for cp in _contact_ask_patterns)
-
-                if is_fallback_like or has_contact_ask:
+                if any(fp in nc for fp in fallback_phrases):
                     action = "fallback_msg"
 
-                    # Check if contact was already confirmed in history
-                    _confirmed_sigs2 = [
-                        "thank you for confirming your number",
-                    ]
-                    _already_confirmed2 = False
-                    for h in reversed(history or []):
-                        if isinstance(h, dict) and h.get("role") == "assistant":
-                            hc2 = _norm(str(h.get("content", "")))
-                            if any(sig in hc2 for sig in _confirmed_sigs2):
-                                _already_confirmed2 = True
-                                break
-
-                    if _already_confirmed2 or contact_confirmed:
-                        # Contact already on file — don't ask again
-                        clean_text = (
-                            "I'm sorry, I don't have that information available in our system right now. "
-                            "Our team already has your contact details and will reach out to you shortly."
-                        )
-                        full_text = clean_text
-                    elif known_phone:
-                        # Phone on file but not yet confirmed
+                    if known_phone:
+                        # Show saved phone and ask for confirmation
                         clean_text = (
                             "I'm sorry, I don't have that information available in our system right now. "
                             f"We already have your contact number as {known_phone}. "
                             "Is this correct? If not, please share the correct number so our team can reach out to you."
+                        )
+                        full_text = clean_text
+                    elif contact_already_collected:
+                        # Contact collected but no phone on record
+                        clean_text = (
+                            "I'm sorry, I don't have that information available in our system right now. "
+                            "We already have your contact details on file and our team will reach out to you shortly."
                         )
                         full_text = clean_text
 
@@ -686,26 +682,16 @@ async def generate_and_stream_ai_response(
             if is_unsatisfied and clean_text:
                 nc = _norm(clean_text)
                 if "please provide your contact details" not in nc and "please share your contact details" not in nc:
-                    # Check if contact already confirmed
-                    _confirmed_sigs3 = [
-                        "thank you for confirming your number",
-                    ]
-                    _already_confirmed3 = any(
-                        any(sig in _norm(str(h.get("content", ""))) for sig in _confirmed_sigs3)
-                        for h in (history or [])
-                        if isinstance(h, dict) and h.get("role") == "assistant"
-                    )
-
-                    if _already_confirmed3 or contact_confirmed:
-                        clean_text = (
-                            f"{clean_text.rstrip()} "
-                            "Our team already has your contact details and will reach out to you shortly."
-                        )
-                    elif known_phone:
+                    if known_phone:
                         clean_text = (
                             f"{clean_text.rstrip()} "
                             f"We already have your contact number as {known_phone}. "
                             "Is this correct? If not, please share the correct number so our team can reach out to you."
+                        )
+                    elif contact_already_collected:
+                        clean_text = (
+                            f"{clean_text.rstrip()} "
+                            "We already have your contact details on file and our team will reach out to you shortly."
                         )
                     else:
                         clean_text = (
