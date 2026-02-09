@@ -220,9 +220,33 @@ def _norm(text: str) -> str:
 
 
 def _extract_phone(text: str) -> Optional[str]:
-    """Return a phone string if ≥8 digits are found, else None."""
+    """Extract and return a valid Indian mobile number (10 digits, starts with 6-9).
+
+    Accepts formats like: 9876543210, +919876543210, 91-9876543210,
+    98765 43210, +91 98765-43210, etc.
+    Returns the clean 10-digit number or None if invalid.
+    """
+    # Strip everything except digits
+    digits = re.sub(r"\D", "", text)
+
+    # Remove leading country code 91 if present (resulting in 12 digits)
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    # Also handle 0-prefix trunk code (e.g. 09876543210)
+    if len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
+
+    # Must be exactly 10 digits starting with 6, 7, 8, or 9
+    if len(digits) == 10 and digits[0] in "6789":
+        return digits
+    return None
+
+
+def _has_digit_intent(text: str) -> bool:
+    """Return True if the user message looks like it's trying to provide a phone number
+    (contains ≥6 consecutive-ish digits), even if the number is invalid."""
     digits = re.findall(r"\d", text)
-    return "".join(digits) if len(digits) >= 8 else None
+    return len(digits) >= 6
 
 
 def _extract_email(text: str) -> Optional[str]:
@@ -231,15 +255,19 @@ def _extract_email(text: str) -> Optional[str]:
 
 
 def _phone_from_dict(d: Optional[Dict[str, Any]]) -> Optional[str]:
-    """Try common key names for a phone number in a dict."""
+    """Try common key names for a phone number in a dict and validate as Indian mobile."""
     if not d or not isinstance(d, dict):
         return None
-    return (
+    raw = (
         d.get("phone")
         or d.get("phone_number")
         or d.get("contact_number")
         or d.get("mobile")
     )
+    if not raw:
+        return None
+    # Validate through Indian mobile number check
+    return _extract_phone(str(raw))
 
 
 async def generate_and_stream_ai_response(
@@ -300,6 +328,54 @@ async def generate_and_stream_ai_response(
                 or _phone_from_dict(user_details)
             )
 
+            # FALLBACK: If no phone in Redis or payload, scan chat history
+            # for a phone the user previously provided in conversation
+            if not known_phone and history:
+                # Look for bot messages that echo a saved number
+                for h in reversed(history):
+                    if not isinstance(h, dict):
+                        continue
+                    content = str(h.get("content", ""))
+                    role = h.get("role", "")
+                    nc = _norm(content)
+
+                    # Check if bot previously echoed a number
+                    if role == "assistant":
+                        # "we've updated your contact number to 9855679455"
+                        num_match = re.search(
+                            r"(?:contact number (?:as|to)|your number (?:as|to))\s+(\d{8,})",
+                            nc,
+                        )
+                        if num_match:
+                            known_phone = num_match.group(1)
+                            break
+
+                    # Check if user sent a phone number after bot asked for contact
+                    if role == "user":
+                        phone_in_msg = _extract_phone(content)
+                        if phone_in_msg:
+                            # Verify the message before this was a contact-ask from bot
+                            idx = history.index(h)
+                            if idx > 0:
+                                prev = history[idx - 1]
+                                if isinstance(prev, dict) and prev.get("role") == "assistant":
+                                    prev_norm = _norm(str(prev.get("content", "")))
+                                    ask_sigs = [
+                                        "please share your contact",
+                                        "please provide your contact",
+                                        "share your correct contact",
+                                    ]
+                                    if any(s in prev_norm for s in ask_sigs):
+                                        known_phone = phone_in_msg
+                                        # Also save it to Redis so future calls find it
+                                        try:
+                                            save_payload = dict(stored_contact) if stored_contact else {}
+                                            save_payload["phone"] = known_phone
+                                            await save_contact_details(bot_id, session_id, save_payload)
+                                        except Exception:
+                                            pass
+                                        break
+
             # Check if contact was CONFIRMED in this session
             # (user said "yes" to confirmation → bot replied with "thank you for confirming")
             # Only then do we stop showing the number for re-confirmation
@@ -318,7 +394,7 @@ async def generate_and_stream_ai_response(
                         and any(sig in _norm(str(h.get("content", ""))) for sig in _contact_confirmed_sigs)
                     ):
                         contact_already_collected = True
-                    break
+                        break
 
             norm_query = _norm(user_query) if user_query else ""
 
@@ -389,10 +465,23 @@ async def generate_and_stream_ai_response(
                 "please provide your contact details",
                 "please share your correct contact number",
                 "if you'd like, please share your contact details",
+                "please enter a valid 10-digit indian mobile number",
             ]
             if any(m in norm_last for m in contact_ask_markers):
                 phone = _extract_phone(user_query)
                 email = _extract_email(user_query)
+
+                # If user tried to type a number but it's invalid, tell them
+                if not phone and not email and _has_digit_intent(user_query):
+                    reply = (
+                        "The mobile number you entered doesn't appear to be valid. "
+                        "Please enter a valid 10-digit Indian mobile number "
+                        "starting with 6, 7, 8, or 9."
+                    )
+                    history.append({"role": "user", "content": user_query})
+                    history.append({"role": "assistant", "content": reply})
+                    await save_chat_history(bot_id, session_id, history, k=10)
+                    return {"fullText": reply, "cleanText": reply, "action": "invalid_phone"}
 
                 if phone or email:
                     # Merge new details into existing stored contact
