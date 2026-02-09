@@ -62,6 +62,33 @@ async def load_chat_history(bot_id: str, session_id: str, k: int = 10) -> list[d
         return []
 
 
+async def save_contact_details(bot_id: str, session_id: str, details: dict):
+    """Persist contact details (phone, email, etc.) for a session."""
+    r = await get_redis_client()
+    key = f"contact_details:{bot_id}:{session_id}"
+    logger.info("Saving contact details | bot_id=%s | session_id=%s", bot_id, session_id)
+    try:
+        await r.set(key, json.dumps(details), ex=3600)
+        logger.debug("Contact details saved | key=%s", key)
+    except Exception:
+        logger.exception("Failed to save contact details | key=%s", key)
+
+
+async def load_contact_details(bot_id: str, session_id: str) -> dict | None:
+    """Load previously saved contact details for a session."""
+    r = await get_redis_client()
+    key = f"contact_details:{bot_id}:{session_id}"
+    logger.info("Loading contact details | bot_id=%s | session_id=%s", bot_id, session_id)
+    data = await r.get(key)
+    if not data:
+        return None
+    try:
+        return json.loads(data)
+    except Exception:
+        logger.exception("Failed to load contact details | key=%s", key)
+        return None
+
+
 async def save_chat_history(bot_id: str, session_id: str, messages: list[dict], k: int = 10):
     r = await get_redis_client()
     key = f"chat_history:{bot_id}:{session_id}"

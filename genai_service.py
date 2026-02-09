@@ -17,7 +17,12 @@ from utils.prompt_builder import (
     format_prompt_for_llama3,
     # get_memory
 )
-from utils.redis_client import load_chat_history, save_chat_history
+from utils.redis_client import (
+    load_chat_history,
+    save_chat_history,
+    save_contact_details,
+    load_contact_details,
+)
 
 # ------------------------------------------------------------------
 # LOGGING SETUP
@@ -207,6 +212,36 @@ def extract_before_hash(text: str) -> str:
 # ------------------------------------------------------------------
 # MAIN RAG FUNCTION
 # ------------------------------------------------------------------
+
+# ---- helpers ----
+def _norm(text: str) -> str:
+    """Lowercase, collapse whitespace."""
+    return " ".join(text.lower().split())
+
+
+def _extract_phone(text: str) -> Optional[str]:
+    """Return a phone string if ≥8 digits are found, else None."""
+    digits = re.findall(r"\d", text)
+    return "".join(digits) if len(digits) >= 8 else None
+
+
+def _extract_email(text: str) -> Optional[str]:
+    m = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
+    return m.group(0) if m else None
+
+
+def _phone_from_dict(d: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Try common key names for a phone number in a dict."""
+    if not d or not isinstance(d, dict):
+        return None
+    return (
+        d.get("phone")
+        or d.get("phone_number")
+        or d.get("contact_number")
+        or d.get("mobile")
+    )
+
+
 async def generate_and_stream_ai_response(
     bot_id: str,
     session_id: str,
@@ -214,6 +249,7 @@ async def generate_and_stream_ai_response(
     ai_node_data: Optional[Dict[str, Any]] = None,
     tenant_name: Optional[str] = None,
     tenant_description: Optional[str] = None,
+    user_details: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Optional[str]]:
 
     logger.info(
@@ -222,13 +258,168 @@ async def generate_and_stream_ai_response(
         session_id,
     )
 
+    # If user details are provided in the payload, MERGE with existing stored data
+    # (never overwrite a saved phone/email with empty values)
+    if user_details:
+        non_empty = {k: v for k, v in dict(user_details).items() if v}
+        if non_empty:
+            try:
+                existing = await load_contact_details(bot_id, session_id)
+                merged = dict(existing) if existing else {}
+                merged.update(non_empty)
+                await save_contact_details(bot_id, session_id, merged)
+                logger.info("User details merged from payload | bot_id=%s | session_id=%s", bot_id, session_id)
+            except Exception:
+                logger.exception("Failed to save user details from payload")
+
     try:
         full_text = ""
         clean_text = ""
         action = None
 
         try:
-            # ---------------- RAG ----------------
+            # ============================================================
+            # 1. LOAD HISTORY + STORED CONTACT DETAILS
+            # ============================================================
+            history = await load_chat_history(bot_id, session_id, k=10)
+
+            try:
+                stored_contact = await load_contact_details(bot_id, session_id)
+            except Exception:
+                stored_contact = None
+
+            # Determine if we already know the user's phone or email
+            known_phone = (
+                _phone_from_dict(stored_contact)
+                or _phone_from_dict(user_details)
+            )
+            known_email = (
+                (stored_contact or {}).get("email")
+                or (user_details or {}).get("email")
+            )
+            contact_on_file = bool(known_phone or known_email)
+            contact_confirmed = bool((stored_contact or {}).get("confirmed"))
+
+            norm_query = _norm(user_query) if user_query else ""
+
+            # Helper: find last assistant message
+            last_assistant_msg: Optional[str] = None
+            for h in reversed(history or []):
+                if isinstance(h, dict) and h.get("role") == "assistant":
+                    c = str(h.get("content", "")).strip()
+                    if c:
+                        last_assistant_msg = c
+                        break
+            norm_last = _norm(last_assistant_msg) if last_assistant_msg else ""
+
+            # ============================================================
+            # 2. INTERCEPT: Confirmation of stored number
+            #    (bot asked "Is <number> correct?")
+            # ============================================================
+            confirm_markers = [
+                "we already have your contact number as",
+                "is this correct",
+            ]
+            if any(m in norm_last for m in confirm_markers):
+                # --- YES / CONFIRM ---
+                yes_phrases = [
+                    "yes", "yeah", "yep", "correct", "right",
+                    "its correct", "it's correct", "that is correct",
+                    "that's correct", "ok", "okay", "confirmed", "confirm",
+                ]
+                if any(y in norm_query for y in yes_phrases):
+                    # Mark contact as confirmed in Redis
+                    try:
+                        _cd = (await load_contact_details(bot_id, session_id)) or {}
+                        _cd["confirmed"] = True
+                        await save_contact_details(bot_id, session_id, _cd)
+                    except Exception:
+                        pass
+                    reply = "Thank you for confirming your number. Our team will contact you shortly."
+                    history.append({"role": "user", "content": user_query})
+                    history.append({"role": "assistant", "content": reply})
+                    await save_chat_history(bot_id, session_id, history, k=10)
+                    return {"fullText": reply, "cleanText": reply, "action": "contact_confirmed"}
+
+                # --- NO / DENY ---
+                no_phrases = [
+                    "no", "nope", "not correct", "incorrect", "wrong",
+                    "not my number", "wrong number", "this is not my number",
+                ]
+                if any(n in norm_query for n in no_phrases):
+                    reply = (
+                        "No problem. Please share your correct contact number "
+                        "so we can update it and reach you on the right number."
+                    )
+                    history.append({"role": "user", "content": user_query})
+                    history.append({"role": "assistant", "content": reply})
+                    await save_chat_history(bot_id, session_id, history, k=10)
+                    return {"fullText": reply, "cleanText": reply, "action": "contact_update_requested"}
+
+            # ============================================================
+            # 3. INTERCEPT: User providing a phone/email after we asked
+            #    (bot asked "please share your contact details" or
+            #     "please share your correct contact number")
+            # ============================================================
+            contact_ask_markers = [
+                "please share your contact details",
+                "please provide your contact details",
+                "please share your correct contact number",
+                "if you'd like, please share your contact details",
+            ]
+            if any(m in norm_last for m in contact_ask_markers):
+                phone = _extract_phone(user_query)
+                email = _extract_email(user_query)
+
+                if phone or email:
+                    contact_payload: Dict[str, Any] = {"raw": user_query}
+                    if phone:
+                        contact_payload["phone"] = phone
+                    if email:
+                        contact_payload["email"] = email
+
+                    try:
+                        # Merge with existing data
+                        _existing = (await load_contact_details(bot_id, session_id)) or {}
+                        _existing.update(contact_payload)
+                        await save_contact_details(bot_id, session_id, _existing)
+                    except Exception:
+                        logger.exception("Failed to save contact details")
+
+                    reply = "Thank you for providing your information. Our team will contact you soon."
+                    history.append({"role": "user", "content": user_query})
+                    history.append({"role": "assistant", "content": reply})
+                    await save_chat_history(bot_id, session_id, history, k=10)
+                    return {"fullText": reply, "cleanText": reply, "action": "contact_saved"}
+
+            # ============================================================
+            # 4. INTERCEPT: Short acknowledgements ("ok", "okay", "thanks")
+            #    after contact was saved or confirmed
+            # ============================================================
+            ack_markers = [
+                "ok", "okay", "ok thanks", "ok thank you", "okay thanks",
+                "okay thank you", "fine", "ok fine", "okay fine",
+                "ok its fine", "ok it's fine", "its fine", "it is fine",
+                "thats fine", "that's fine", "fine thanks", "fine thank you",
+                "thanks", "thank you", "great", "alright",
+            ]
+            thank_markers = [
+                "our team will contact you",
+                "our team will connect with you",
+                "we've received your details",
+                "a representative will be in touch",
+                "thank you for confirming your number",
+            ]
+            if any(m in norm_last for m in thank_markers) and any(a in norm_query for a in ack_markers):
+                reply = "Great, I'm glad that's all set. If you need anything else, just let me know."
+                history.append({"role": "user", "content": user_query})
+                history.append({"role": "assistant", "content": reply})
+                await save_chat_history(bot_id, session_id, history, k=10)
+                return {"fullText": reply, "cleanText": reply, "action": "acknowledgement"}
+
+            # ============================================================
+            # 5. RAG RETRIEVAL
+            # ============================================================
             knowledge_base = ""
 
             if not ai_node_data or not ai_node_data.get("disableKnowledgeBase"):
@@ -240,7 +431,7 @@ async def generate_and_stream_ai_response(
                     include_metadata=True,
                     namespace=bot_id,
                 )
-                
+
                 logger.debug("Pinecone raw response: %s", res)
 
                 SIMILARITY_THRESHOLD = 0.55
@@ -276,54 +467,106 @@ async def generate_and_stream_ai_response(
 
                 logger.debug("Knowledge base size=%d chars", len(knowledge_base))
 
-            # ---------------- PROMPT ----------------
-           
-            history = await load_chat_history(bot_id, session_id, k=10)
-            # breakpoint()
+            has_kb = bool(knowledge_base.strip())
 
-            # Build an optional tenant-specific instruction so the LLM
-            # understands which tenant (brand/customer) it is answering for.
+            # ============================================================
+            # 6. INTENT CLASSIFICATION + PROMPT BUILDING
+            # ============================================================
             tenant_custom_instruction: Optional[str] = None
             if tenant_name or tenant_description:
                 lines: list[str] = [
                     "You are a professional customer support assistant known for clear, accurate, and helpful responses.",
                 ]
-
                 lines.append("")
                 lines.append("TENANT CONTEXT:")
                 if tenant_name:
                     lines.append(f"- Tenant name: {tenant_name}")
                 if tenant_description:
                     lines.append(f"- Tenant description: {tenant_description}")
-
                 tenant_custom_instruction = "\n".join(lines)
 
-            # Count fallback responses in history
+            # Count how many consecutive recent assistant messages were fallbacks
             fallback_count = 0
-           
-            
+            _fallback_sigs = [
+                "i don't have that information available",
+                "i don't have enough information to answer",
+                "please provide your contact details and our team will connect",
+                "please share your contact details and our team will connect",
+            ]
+            for h in reversed(history or []):
+                if not isinstance(h, dict):
+                    continue
+                if h.get("role") == "assistant":
+                    ac = _norm(str(h.get("content", "")))
+                    if any(sig in ac for sig in _fallback_sigs):
+                        fallback_count += 1
+                    else:
+                        break
+                elif h.get("role") == "user":
+                    continue
+
             prompt_dict = build_augmented_system_instruction(
                 history=history,
                 user_message=user_query,
                 knowledge_base=knowledge_base,
                 custom_instruction=tenant_custom_instruction,
                 fallback_count=fallback_count,
-                # fallback_count=0
             )
 
-           
-           
             max_tokens = prompt_dict.get("max_tokens", 800)
             action = prompt_dict.get("detected_intent")
 
             logger.debug("Detected intent: %s", action)
-            logger.debug("Final system prompt prepared")
-             # If fallback_count >= 4, set action to 'fallback_max' for escalation
-            # if fallback_count >= 3:
-            #     # breakpoint()
-            #     action = "fallback_max"
 
-            # Build full message list for the LLM: system -> prior turns -> current user
+            # ============================================================
+            # 7. KB EMPTY + NORMAL_QA → FALLBACK (no LLM call needed)
+            # ============================================================
+            if not has_kb and action == "normal_qa":
+                # Check if contact was explicitly confirmed in this session
+                _confirmed_sigs = [
+                    "thank you for confirming your number",
+                ]
+                _contact_already_confirmed = False
+                for h in reversed(history or []):
+                    if isinstance(h, dict) and h.get("role") == "assistant":
+                        hc = _norm(str(h.get("content", "")))
+                        if any(sig in hc for sig in _confirmed_sigs):
+                            _contact_already_confirmed = True
+                            break
+
+                if _contact_already_confirmed or contact_confirmed:
+                    # Contact already saved — don't ask again
+                    fallback_reply = (
+                        "I'm sorry, I don't have that information available in our system right now. "
+                        "Our team already has your contact details and will reach out to you shortly."
+                    )
+                elif known_phone:
+                    # We have the user's phone but haven't confirmed yet → ask for confirmation
+                    fallback_reply = (
+                        "I'm sorry, I don't have that information available in our system right now. "
+                        f"We already have your contact number as {known_phone}. "
+                        "Is this correct? If not, please share the correct number so our team can reach out to you."
+                    )
+                else:
+                    # No phone on file → ask for contact details
+                    fallback_reply = (
+                        "I'm sorry, I don't have that information available in our system right now. "
+                        "If you'd like, please share your contact details and our team will connect with you shortly."
+                    )
+
+                history.append({"role": "user", "content": user_query})
+                history.append({"role": "assistant", "content": fallback_reply})
+                await save_chat_history(bot_id, session_id, history, k=10)
+
+                return {
+                    "fullText": fallback_reply,
+                    "cleanText": fallback_reply,
+                    "action": "fallback_msg",
+                }
+
+            # ============================================================
+            # 8. LLM GENERATION (KB has content or non-QA intent)
+            # ============================================================
             messages: list[dict] = [prompt_dict["system_message"]]
 
             for h in history:
@@ -336,8 +579,7 @@ async def generate_and_stream_ai_response(
                 messages.append({"role": role, "content": content})
 
             messages.append({"role": "user", "content": user_query})
-             
-            # ---------------- LLM ----------------
+
             full_text = await generate_chat_response(
                 messages,
                 max_tokens=max_tokens,
@@ -345,111 +587,147 @@ async def generate_and_stream_ai_response(
                 top_p=0.9,
             )
 
-            # ---------------- POST PROCESS ----------------
+            # ============================================================
+            # 9. POST-PROCESSING
+            # ============================================================
             clean_text = clean_llm_output(full_text)
-           
 
-            # If the model returned the explicit knowledge-base fallback message,
-            # mark the action as a fallback so the caller can handle it specially.
-            kb_fallback_message = (
-                "I'm sorry, I don't have enough information to answer that right now. "
-                "Please provide your contact details and our team will connect with you shortly."
-            )
-            # Use a normalized substring check so the action is set
-            # even if the model adds extra sentences before/after
+            # Detect if LLM itself produced a fallback-style message
             if clean_text:
-                normalized_clean = " ".join(clean_text.split()).lower()
-                normalized_fallback = " ".join(kb_fallback_message.split()).lower()
-                if normalized_fallback in normalized_clean:
+                nc = _norm(clean_text)
+                fallback_phrases = [
+                    "share your contact details and our team will connect with you shortly",
+                    "provide your contact details and our team will connect with you shortly",
+                    "please provide your contact details and our team will connect",
+                    "please share your contact details and our team will connect",
+                    "i don't have enough information to answer that right now",
+                    "i don't have that information available in our system right now",
+                ]
+                # Also detect when LLM asks for contact details in any form
+                _contact_ask_patterns = [
+                    "please provide your contact details",
+                    "please share your contact details",
+                    "share your contact details",
+                    "provide your contact details",
+                    "please share your contact number",
+                    "provide your contact number",
+                ]
+                is_fallback_like = any(fp in nc for fp in fallback_phrases)
+                has_contact_ask = any(cp in nc for cp in _contact_ask_patterns)
+
+                if is_fallback_like or has_contact_ask:
                     action = "fallback_msg"
 
-            # ---------------- UNSATISFIED USER HANDLING ----------------
-            # If the user keeps saying the previous answer is not what
-            # they want (e.g., "no, I want other services"), ensure we
-            # add a contact-details sentence and mark as fallback_msg.
+                    # Check if contact was already confirmed in history
+                    _confirmed_sigs2 = [
+                        "thank you for confirming your number",
+                    ]
+                    _already_confirmed2 = False
+                    for h in reversed(history or []):
+                        if isinstance(h, dict) and h.get("role") == "assistant":
+                            hc2 = _norm(str(h.get("content", "")))
+                            if any(sig in hc2 for sig in _confirmed_sigs2):
+                                _already_confirmed2 = True
+                                break
+
+                    if _already_confirmed2 or contact_confirmed:
+                        # Contact already on file — don't ask again
+                        clean_text = (
+                            "I'm sorry, I don't have that information available in our system right now. "
+                            "Our team already has your contact details and will reach out to you shortly."
+                        )
+                        full_text = clean_text
+                    elif known_phone:
+                        # Phone on file but not yet confirmed
+                        clean_text = (
+                            "I'm sorry, I don't have that information available in our system right now. "
+                            f"We already have your contact number as {known_phone}. "
+                            "Is this correct? If not, please share the correct number so our team can reach out to you."
+                        )
+                        full_text = clean_text
+
+            # ============================================================
+            # 10. UNSATISFIED USER HANDLING
+            # ============================================================
             unsatisfied_phrases = [
-                # Direct rejections
-                "no i want other services",
-                "no i want more services",
-                "no i want new services",
-                "no this is not what i asked",
-                "no this is not what i want",
-                "this is not what i asked",
-                "this is not what i want",
-                "this does not answer my question",
-                "you didn't answer my question",
-                "you did not answer my question",
-                "this is not helpful",
-                "not helpful",
-                "not satisfied",
+                "no i want other services", "no i want more services",
+                "no i want new services", "no this is not what i asked",
+                "no this is not what i want", "this is not what i asked",
+                "this is not what i want", "this does not answer my question",
+                "you didn't answer my question", "you did not answer my question",
+                "this is not helpful", "not helpful", "not satisfied",
             ]
 
-            def _normalize(text: str) -> str:
-                return " ".join(text.lower().split())
+            is_unsatisfied = any(p in norm_query for p in unsatisfied_phrases)
 
-            is_unsatisfied = False
-            current_norm = _normalize(user_query) if user_query else ""
-
-            # 1) Check current message for explicit dissatisfaction phrases
-            if any(p in current_norm for p in unsatisfied_phrases):
-                is_unsatisfied = True
-            else:
-                # 2) Check a few recent user turns for dissatisfaction
-                last_user_texts: list[str] = []
-                for h in history or []:
-                    if isinstance(h, dict) and h.get("role") == "user":
-                        content = str(h.get("content", "")).strip()
-                        if content:
-                            last_user_texts.append(content)
-                last_user_texts = last_user_texts[-3:]
+            if not is_unsatisfied:
+                last_user_texts = [
+                    str(h.get("content", "")).strip()
+                    for h in (history or [])
+                    if isinstance(h, dict) and h.get("role") == "user"
+                ][-3:]
                 for txt in last_user_texts:
-                    norm_txt = _normalize(txt)
-                    if any(p in norm_txt for p in unsatisfied_phrases):
+                    if any(p in _norm(txt) for p in unsatisfied_phrases):
                         is_unsatisfied = True
                         break
 
-            # 3) If the user keeps insisting on "new/other/more services"
-            # after we already answered about services, treat that as
-            # dissatisfaction as well.
-            if not is_unsatisfied and current_norm:
-                wants_more_services = any(
-                    phrase in current_norm
-                    for phrase in [
-                        "i want new services",
-                        "i want other services",
-                        "i want more services",
-                    ]
+            if not is_unsatisfied and norm_query:
+                wants_more = any(
+                    p in norm_query
+                    for p in ["i want new services", "i want other services", "i want more services"]
                 )
-                if wants_more_services:
-                    # Check if we already talked about services in previous
-                    # assistant replies.
+                if wants_more:
                     for h in history or []:
                         if isinstance(h, dict) and h.get("role") == "assistant":
-                            a_content = str(h.get("content", ""))
-                            if "services" in _normalize(a_content):
+                            if "services" in _norm(str(h.get("content", ""))):
                                 is_unsatisfied = True
                                 break
 
             if is_unsatisfied and clean_text:
-                norm_clean = _normalize(clean_text)
-                # Only append if the contact-details line isn't already there
-                if "please provide your contact details" not in norm_clean:
-                    contact_line = "Please provide your contact details and our team will connect with you shortly."
-                    clean_text = f"{clean_text.rstrip()} {contact_line}"
+                nc = _norm(clean_text)
+                if "please provide your contact details" not in nc and "please share your contact details" not in nc:
+                    # Check if contact already confirmed
+                    _confirmed_sigs3 = [
+                        "thank you for confirming your number",
+                    ]
+                    _already_confirmed3 = any(
+                        any(sig in _norm(str(h.get("content", ""))) for sig in _confirmed_sigs3)
+                        for h in (history or [])
+                        if isinstance(h, dict) and h.get("role") == "assistant"
+                    )
+
+                    if _already_confirmed3 or contact_confirmed:
+                        clean_text = (
+                            f"{clean_text.rstrip()} "
+                            "Our team already has your contact details and will reach out to you shortly."
+                        )
+                    elif known_phone:
+                        clean_text = (
+                            f"{clean_text.rstrip()} "
+                            f"We already have your contact number as {known_phone}. "
+                            "Is this correct? If not, please share the correct number so our team can reach out to you."
+                        )
+                    else:
+                        clean_text = (
+                            f"{clean_text.rstrip()} "
+                            "Please provide your contact details and our team will connect with you shortly."
+                        )
                 action = "fallback_msg"
 
+            # ============================================================
+            # 11. GREETING CLEANUP
+            # ============================================================
             if action == "greeting":
                 clean_text = extract_before_hash(clean_text)
-            
-            # breakpoint()
-            # ---------------- SAVE HISTORY ----------------
+
+            # ============================================================
+            # 12. SAVE HISTORY & RETURN
+            # ============================================================
             history.append({"role": "user", "content": user_query})
             history.append({"role": "assistant", "content": clean_text})
             await save_chat_history(bot_id, session_id, history, k=10)
 
             logger.info("Chat response generated successfully")
-            print("Clean LLM outputttttttttttttttttttttttttttttt:", clean_text)
-            print("Actionkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk:", action , fallback_count)
             return {
                 "fullText": full_text,
                 "cleanText": clean_text,
