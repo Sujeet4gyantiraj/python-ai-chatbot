@@ -677,27 +677,52 @@ async def generate_and_stream_ai_response(
             # 7. KB EMPTY + NORMAL_QA → FALLBACK (no LLM call needed)
             # ============================================================
             if not has_kb and action == "normal_qa":
-                # Build a personal greeting prefix if we know the visitor's name
-                name_prefix = f"{visitor_name}, " if visitor_name else ""
+                # ── Rotating fallback pools so the user never sees the
+                #    exact same message twice in a row.
+                name_hi = f"{visitor_name}, " if visitor_name else ""
+                name_hi_lower = name_hi.lower()  # for mid-sentence use
+
+                _no_info_variants = [
+                    f"I'm sorry {name_hi_lower}I don't have that information available in our system right now.",
+                    f"Unfortunately {name_hi_lower}that isn't something I'm able to answer at the moment.",
+                    f"I appreciate your question{', ' + visitor_name if visitor_name else ''}! Unfortunately, that's outside the information I currently have access to.",
+                    f"Thanks for asking{', ' + visitor_name if visitor_name else ''}. I'm not able to find an answer to that in our system right now.",
+                    f"That's a great question{', ' + visitor_name if visitor_name else ''}. However, I don't have the details to answer it at this time.",
+                ]
+
+                _ask_contact_variants = [
+                    "If you'd like, please share your contact details and our team will connect with you shortly.",
+                    "Would you like to share your contact information so our team can get back to you with an answer?",
+                    "Please feel free to leave your contact details and a team member will follow up with you.",
+                    "You're welcome to provide your contact info and we'll have the right person reach out to you.",
+                    "If you share your contact details, our team will be happy to assist you further.",
+                ]
+
+                _already_have_contact_variants = [
+                    "We already have your contact details on file and our team will reach out to you shortly.",
+                    "Don't worry — we have your contact information and someone from our team will get back to you soon.",
+                    "Our team already has your details and will be in touch with you shortly.",
+                    "We've noted your contact information and a team member will follow up soon.",
+                    "Rest assured, we have your details on record and our team will connect with you.",
+                ]
+
+                idx = fallback_count % len(_no_info_variants)
 
                 if known_phone:
-                    # We have the user's phone → show it and ask for confirmation
                     fallback_reply = (
-                        f"I'm sorry {name_prefix.lower()}I don't have that information available in our system right now. "
+                        f"{_no_info_variants[idx]} "
                         f"We already have your contact number as {known_phone}. "
                         "Is this correct? If not, please share the correct number so our team can reach out to you."
                     )
                 elif contact_already_collected:
-                    # Contact collected but no phone on record
                     fallback_reply = (
-                        f"I'm sorry {name_prefix.lower()}I don't have that information available in our system right now. "
-                        "We already have your contact details on file and our team will reach out to you shortly."
+                        f"{_no_info_variants[idx]} "
+                        f"{_already_have_contact_variants[idx]}"
                     )
                 else:
-                    # No contact info at all → ask for contact details
                     fallback_reply = (
-                        f"I'm sorry {name_prefix.lower()}I don't have that information available in our system right now. "
-                        "If you'd like, please share your contact details and our team will connect with you shortly."
+                        f"{_no_info_variants[idx]} "
+                        f"{_ask_contact_variants[idx]}"
                     )
 
                 history.append({"role": "user", "content": user_query})
@@ -750,19 +775,34 @@ async def generate_and_stream_ai_response(
                 if any(fp in nc for fp in fallback_phrases):
                     action = "fallback_msg"
 
+                    # Use the same rotating pool as Step 7
+                    name_hi = f"{visitor_name}, " if visitor_name else ""
+                    name_hi_lower = name_hi.lower()
+                    _no_info_v = [
+                        f"I'm sorry {name_hi_lower}I don't have that information available in our system right now.",
+                        f"Unfortunately {name_hi_lower}that isn't something I'm able to answer at the moment.",
+                        f"I appreciate your question{', ' + visitor_name if visitor_name else ''}! Unfortunately, that's outside the information I currently have access to.",
+                        f"Thanks for asking{', ' + visitor_name if visitor_name else ''}. I'm not able to find an answer to that in our system right now.",
+                        f"That's a great question{', ' + visitor_name if visitor_name else ''}. However, I don't have the details to answer it at this time.",
+                    ]
+                    _contact_v = [
+                        "We already have your contact details on file and our team will reach out to you shortly.",
+                        "Don't worry — we have your contact information and someone from our team will get back to you soon.",
+                        "Our team already has your details and will be in touch with you shortly.",
+                    ]
+                    ix = fallback_count % len(_no_info_v)
+
                     if known_phone:
-                        # Show saved phone and ask for confirmation
                         clean_text = (
-                            "I'm sorry, I don't have that information available in our system right now. "
+                            f"{_no_info_v[ix]} "
                             f"We already have your contact number as {known_phone}. "
                             "Is this correct? If not, please share the correct number so our team can reach out to you."
                         )
                         full_text = clean_text
                     elif contact_already_collected:
-                        # Contact collected but no phone on record
                         clean_text = (
-                            "I'm sorry, I don't have that information available in our system right now. "
-                            "We already have your contact details on file and our team will reach out to you shortly."
+                            f"{_no_info_v[ix]} "
+                            f"{_contact_v[ix % len(_contact_v)]}"
                         )
                         full_text = clean_text
 
