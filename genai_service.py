@@ -331,56 +331,47 @@ async def generate_and_stream_ai_response(
             # FALLBACK: If no phone in Redis or payload, scan chat history
             # for a phone the user previously provided in conversation
             if not known_phone and history:
-                # Look for bot messages that echo a saved number
+                # Strategy 1: Look for bot messages that echo a confirmed number
                 for h in reversed(history):
-                    if not isinstance(h, dict):
+                    if not isinstance(h, dict) or h.get("role") != "assistant":
                         continue
-                    content = str(h.get("content", ""))
-                    role = h.get("role", "")
-                    nc = _norm(content)
+                    nc = _norm(str(h.get("content", "")))
+                    num_match = re.search(
+                        r"(?:contact number (?:as|to)|your number (?:as|to))\s+(\d{8,})",
+                        nc,
+                    )
+                    if num_match:
+                        known_phone = num_match.group(1)
+                        break
 
-                    # Check if bot previously echoed a number
-                    if role == "assistant":
-                        # "we've updated your contact number to 9855679455"
-                        num_match = re.search(
-                            r"(?:contact number (?:as|to)|your number (?:as|to))\s+(\d{8,})",
-                            nc,
-                        )
-                        if num_match:
-                            known_phone = num_match.group(1)
+                # Strategy 2: Look for any valid Indian phone sent by the user
+                # (most recent one wins, regardless of what bot said before it)
+                if not known_phone:
+                    for h in reversed(history):
+                        if not isinstance(h, dict) or h.get("role") != "user":
+                            continue
+                        phone_in_msg = _extract_phone(str(h.get("content", "")))
+                        if phone_in_msg:
+                            known_phone = phone_in_msg
                             break
 
-                    # Check if user sent a phone number after bot asked for contact
-                    if role == "user":
-                        phone_in_msg = _extract_phone(content)
-                        if phone_in_msg:
-                            # Verify the message before this was a contact-ask from bot
-                            idx = history.index(h)
-                            if idx > 0:
-                                prev = history[idx - 1]
-                                if isinstance(prev, dict) and prev.get("role") == "assistant":
-                                    prev_norm = _norm(str(prev.get("content", "")))
-                                    ask_sigs = [
-                                        "please share your contact",
-                                        "please provide your contact",
-                                        "share your correct contact",
-                                    ]
-                                    if any(s in prev_norm for s in ask_sigs):
-                                        known_phone = phone_in_msg
-                                        # Also save it to Redis so future calls find it
-                                        try:
-                                            save_payload = dict(stored_contact) if stored_contact else {}
-                                            save_payload["phone"] = known_phone
-                                            await save_contact_details(bot_id, session_id, save_payload)
-                                        except Exception:
-                                            pass
-                                        break
+                # Persist recovered phone to Redis so future calls find it directly
+                if known_phone:
+                    try:
+                        save_payload = dict(stored_contact) if stored_contact else {}
+                        save_payload["phone"] = known_phone
+                        await save_contact_details(bot_id, session_id, save_payload)
+                    except Exception:
+                        pass
 
             # Check if contact was CONFIRMED in this session
             # (user said "yes" to confirmation → bot replied with "thank you for confirming")
             # Only then do we stop showing the number for re-confirmation
             _contact_confirmed_sigs = [
                 "thank you for confirming your number",
+                "we've received your details",
+                "we have received your details",
+                "a representative will be in touch",
             ]
             contact_already_collected = False
             # Also check the Redis confirmed flag
@@ -532,6 +523,9 @@ async def generate_and_stream_ai_response(
                 "our team will contact you",
                 "our team will connect with you",
                 "our team will reach out to you",
+                "we've received your details",
+                "we have received your details",
+                "a representative will be in touch",
             ]
             if any(m in norm_last for m in thank_markers) and any(a in norm_query for a in ack_markers):
                 reply = "Great, I'm glad that's all set. If you need anything else, just let me know."
@@ -638,6 +632,29 @@ async def generate_and_stream_ai_response(
 
             max_tokens = prompt_dict.get("max_tokens", 800)
             action = prompt_dict.get("detected_intent")
+
+            # ── 6b. BOT-IDENTITY QUESTIONS ──────────────────────────
+            # "What is your name", "who are you", etc. are about the bot
+            # itself, not the knowledge base.  Reclassify as greeting so
+            # the LLM answers using tenant_name / custom_instruction.
+            _bot_identity_phrases = [
+                "what is your name", "what's your name", "whats your name",
+                "who are you", "what are you", "tell me your name",
+                "what should i call you", "may i know your name",
+                "what do you call yourself", "your name please",
+                "your name", "ur name", "bot name",
+                "i want to your name", "i want your name",
+            ]
+            if action == "normal_qa" and any(p in norm_query for p in _bot_identity_phrases):
+                action = "greeting"
+                prompt_dict = build_augmented_system_instruction(
+                    history=history,
+                    user_message=user_query,
+                    knowledge_base=knowledge_base,
+                    custom_instruction=tenant_custom_instruction,
+                    fallback_count=fallback_count,
+                    intent="greeting",
+                )
 
             logger.debug("Detected intent: %s", action)
 
