@@ -139,8 +139,8 @@ def clean_llm_output(text: str) -> str:
 async def generate_chat_response(
     messages: list[dict],
     max_tokens: int = 2000,
-    temperature: float = 0.1,
-    top_p: float = 0.9,
+    temperature: float = 0.3,
+    top_p: float = 0.4,
 ) -> str:
     loop = asyncio.get_running_loop()
 
@@ -327,6 +327,15 @@ async def generate_and_stream_ai_response(
                 _phone_from_dict(stored_contact)
                 or _phone_from_dict(user_details)
             )
+
+            # Determine visitor name from payload or stored contact
+            visitor_name: Optional[str] = None
+            if user_details and isinstance(user_details, dict):
+                visitor_name = user_details.get("name") or user_details.get("Name")
+            if not visitor_name and stored_contact and isinstance(stored_contact, dict):
+                visitor_name = stored_contact.get("name") or stored_contact.get("Name")
+            if visitor_name:
+                visitor_name = visitor_name.strip()
 
             # FALLBACK: If no phone in Redis or payload, scan chat history
             # for a phone the user previously provided in conversation
@@ -590,7 +599,7 @@ async def generate_and_stream_ai_response(
             # 6. INTENT CLASSIFICATION + PROMPT BUILDING
             # ============================================================
             tenant_custom_instruction: Optional[str] = None
-            if tenant_name or tenant_description:
+            if tenant_name or tenant_description or visitor_name:
                 lines: list[str] = [
                     "You are a professional customer support assistant known for clear, accurate, and helpful responses.",
                 ]
@@ -600,6 +609,12 @@ async def generate_and_stream_ai_response(
                     lines.append(f"- Tenant name: {tenant_name}")
                 if tenant_description:
                     lines.append(f"- Tenant description: {tenant_description}")
+                if visitor_name:
+                    lines.append("")
+                    lines.append("VISITOR CONTEXT:")
+                    lines.append(f"- The visitor's name is: {visitor_name}")
+                    lines.append("- Address the visitor by their name naturally in your responses (e.g., 'Hi Sujeet, ...' or 'Sure Sujeet, ...').")
+                    lines.append("- Do NOT overuse the name — use it once at the start of your response, not in every sentence.")
                 tenant_custom_instruction = "\n".join(lines)
 
             # Count how many consecutive recent assistant messages were fallbacks
@@ -662,23 +677,26 @@ async def generate_and_stream_ai_response(
             # 7. KB EMPTY + NORMAL_QA → FALLBACK (no LLM call needed)
             # ============================================================
             if not has_kb and action == "normal_qa":
+                # Build a personal greeting prefix if we know the visitor's name
+                name_prefix = f"{visitor_name}, " if visitor_name else ""
+
                 if known_phone:
                     # We have the user's phone → show it and ask for confirmation
                     fallback_reply = (
-                        "I'm sorry, I don't have that information available in our system right now. "
+                        f"I'm sorry {name_prefix.lower()}I don't have that information available in our system right now. "
                         f"We already have your contact number as {known_phone}. "
                         "Is this correct? If not, please share the correct number so our team can reach out to you."
                     )
                 elif contact_already_collected:
                     # Contact collected but no phone on record
                     fallback_reply = (
-                        "I'm sorry, I don't have that information available in our system right now. "
+                        f"I'm sorry {name_prefix.lower()}I don't have that information available in our system right now. "
                         "We already have your contact details on file and our team will reach out to you shortly."
                     )
                 else:
                     # No contact info at all → ask for contact details
                     fallback_reply = (
-                        "I'm sorry, I don't have that information available in our system right now. "
+                        f"I'm sorry {name_prefix.lower()}I don't have that information available in our system right now. "
                         "If you'd like, please share your contact details and our team will connect with you shortly."
                     )
 
