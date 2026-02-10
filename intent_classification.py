@@ -382,16 +382,22 @@ class SemanticRouteClassifier:
         best_route = max(scores, key=scores.get)
         confidence = scores[best_route]
 
-        # If TF-IDF thinks this is an agent_request but the user
-        # never mentioned any human/agent/support words, treat it
-        # as a normal QA question instead of escalating.
+        # If TF-IDF thinks this is an agent_request, require BOTH
+        # an agent/human marker AND a communication verb. Without both,
+        # demote to normal_qa so "I want sales services" stays as QA.
         if best_route == 'agent_request':
             words = set(self._tokenize(preprocessed_query))
             agent_markers = {
                 'agent', 'human', 'representative', 'operator', 'someone',
                 'person', 'support', 'customer', 'service', 'sales', 'team'
             }
-            if not any(k in words for k in agent_markers):
+            comm_verbs = {
+                'talk', 'speak', 'call', 'connect', 'contact',
+                'reach', 'transfer', 'escalate'
+            }
+            has_marker = any(k in words for k in agent_markers)
+            has_verb = any(v in words for v in comm_verbs)
+            if not (has_marker and has_verb):
                 best_route = 'normal_qa'
                 confidence = scores['normal_qa']
         
@@ -658,15 +664,22 @@ class BERTIntentClassifier:
         best_route = max(similarities, key=similarities.get)
         confidence = similarities[best_route]
 
-        # If BERT picks agent_request but there are no explicit
-        # human/agent/support markers in the text, prefer normal_qa.
+        # If BERT picks agent_request, require BOTH an agent/human
+        # marker AND a communication verb to prevent "sales services"
+        # from escalating.
         if best_route == 'agent_request':
             q_words = set(re.findall(r"\w+", query.lower()))
             agent_markers = {
                 'agent', 'human', 'representative', 'operator', 'someone',
                 'person', 'support', 'customer', 'service', 'sales', 'team'
             }
-            if not any(k in q_words for k in agent_markers):
+            comm_verbs = {
+                'talk', 'speak', 'call', 'connect', 'contact',
+                'reach', 'transfer', 'escalate'
+            }
+            has_marker = any(k in q_words for k in agent_markers)
+            has_verb = any(v in q_words for v in comm_verbs)
+            if not (has_marker and has_verb):
                 best_route = 'normal_qa'
                 confidence = similarities['normal_qa']
         
@@ -777,7 +790,7 @@ class HybridIntentClassifier:
         human_markers = [
             'agent', 'human', 'representative', 'operator', 'someone',
             'person', 'support', 'customer service', 'customer-care',
-            'customer care', 'sales', 'sales team', 'salesperson'
+            'customer care'
         ]
 
         mentions_talk = any(t in q_lower for t in talk_markers)
@@ -791,7 +804,35 @@ class HybridIntentClassifier:
                     'reason': 'talk_to_bot_or_you_guard'
                 }
             return 'normal_qa', 0.95, {}
-        
+
+        # Strong escalation: communication verb + human/agent target
+        # Only fire agent_request when user explicitly wants to
+        # talk/call/connect to a person/agent/sales etc.
+        comm_verbs = ['talk', 'speak', 'call', 'connect', 'contact', 'reach', 'transfer']
+        escalation_targets = [
+            'agent', 'human', 'representative', 'person', 'someone',
+            'somebody', 'support', 'team', 'staff', 'sales', 'sales team',
+            'salesperson', 'advisor', 'consultant', 'expert'
+        ]
+        direct_phrases = [
+            'call me', 'call us', 'give me a call', 'ring me',
+            'connect me', 'connect us'
+        ]
+        schedule_words = ['schedule', 'book', 'booking', 'appointment', 'slot']
+
+        has_comm_verb = any(v in q_lower for v in comm_verbs)
+        has_escalation_target = any(t in q_lower for t in escalation_targets)
+        has_direct_phrase = any(p in q_lower for p in direct_phrases)
+        has_schedule = any(s in q_lower for s in schedule_words)
+
+        if (has_direct_phrase or (has_comm_verb and has_escalation_target)) and not has_schedule:
+            if return_scores:
+                return 'agent_request', 0.97, {
+                    'method': 'hybrid_rule',
+                    'reason': 'explicit_contact_phrase'
+                }
+            return 'agent_request', 0.97, {}
+
         # Step 1: Try TF-IDF first (fast path)
         route, confidence, tfidf_details = self.tfidf_classifier.classify(query, return_scores=True)
         # breakpoint()

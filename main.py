@@ -88,6 +88,7 @@ async def generate_ai_response_endpoint(req: GenerateAIRequest):
         ai_node_data=req.ai_node_data,
         tenant_name=req.tenant_name,
         tenant_description=req.tenant_description,
+        user_details=(req.user_details.model_dump() if req.user_details else None),
     )
 
     logger.info(
