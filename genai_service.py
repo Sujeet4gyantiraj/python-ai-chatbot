@@ -219,6 +219,14 @@ def _norm(text: str) -> str:
     return " ".join(text.lower().split())
 
 
+def _phrase_match(phrase: str, text: str) -> bool:
+    """Check if *phrase* appears in *text* as whole words (word-boundary safe).
+
+    Avoids false positives like 'no' matching inside 'know'.
+    """
+    return bool(re.search(r'\b' + re.escape(phrase) + r'\b', text))
+
+
 def _extract_phone(text: str) -> Optional[str]:
     """Extract and return a valid Indian mobile number (10 digits, starts with 6-9).
 
@@ -536,13 +544,351 @@ async def generate_and_stream_ai_response(
                 "we have received your details",
                 "a representative will be in touch",
             ]
-            if any(m in norm_last for m in thank_markers) and any(a in norm_query for a in ack_markers):
+            if any(m in norm_last for m in thank_markers) and any(_phrase_match(a, norm_query) for a in ack_markers):
                 reply = "Great, I'm glad that's all set. If you need anything else, just let me know."
                 history.append({"role": "user", "content": user_query})
                 history.append({"role": "assistant", "content": reply})
                 await save_chat_history(bot_id, session_id, history, k=10)
                 return {"fullText": reply, "cleanText": reply, "action": "acknowledgement"}
 
+            # ============================================================
+            # 4b. INTERCEPT: Conversation closers after bot's "all set"
+            #     or fallback messages — "no", "nothing", "bye", etc.
+            # ============================================================
+            _all_set_markers = [
+                "i'm glad that's all set",
+                "im glad thats all set",
+                "if you need anything else",
+                "feel free to reach out",
+                "don't hesitate to come back",
+                "i'm here whenever you need",
+                "im here whenever you need",
+                "i'm always here if you",
+                "im always here if you",
+            ]
+            _close_phrases = [
+                "no", "nope", "nah", "bye", "goodbye", "done",
+                "nothing", "nothing else", "no need", "not needed",
+                "im fine", "i am fine", "im good", "i am good",
+                "im done", "i am done", "all done", "thats all",
+                "that is all", "thats it", "that is it",
+                "no thanks", "no thank you", "never mind",
+                "nevermind", "leave it", "forget it",
+                "not interested", "not right now", "maybe later",
+                "i dont need any answer", "i do not need any answer",
+                "i dont need anything", "i do not need anything",
+                "i dont want anything", "i do not want anything",
+                "no more questions", "no i am ok", "no its ok",
+            ]
+            if any(m in norm_last for m in _all_set_markers) and any(_phrase_match(c, norm_query) for c in _close_phrases):
+                reply = "Take care! I'm here whenever you need help. Have a great day!"
+                history.append({"role": "user", "content": user_query})
+                history.append({"role": "assistant", "content": reply})
+                await save_chat_history(bot_id, session_id, history, k=10)
+                return {"fullText": reply, "cleanText": reply, "action": "conversation_close"}
+
+            # ============================================================
+            # 4c. INTERCEPT: User wants to change/update contact number
+            #     "i want to change", "i want to change my number", etc.
+            #     *** MUST run BEFORE "my number" lookup (step 4d) ***
+            # ============================================================
+            _change_contact_phrases = [
+                "i want to change", "i want to update",
+                "i want change", "i want update",
+                "change my number", "update my number",
+                "change my contact", "update my contact",
+                "i want to change my number", "i want to update my number",
+                "i want to change number", "i want to update number",
+                "i want change my number", "i want change number",
+                "change number", "update number",
+                "want to change", "want to update",
+                "want change", "want update",
+                "need to change", "need to update",
+                "can i change", "can i update",
+            ]
+            # Check if the context is about contact/number
+            _number_context_in_last = any(
+                m in norm_last
+                for m in [
+                    "contact number", "phone number", "your number",
+                    "on file for you", "is this correct",
+                    "we already have your contact",
+                    "is there anything else",
+                ]
+            )
+            if any(p in norm_query for p in _change_contact_phrases) and (
+                _number_context_in_last or "number" in norm_query or "contact" in norm_query
+                or norm_query in [
+                    "i want to change", "i want to update",
+                    "i want change", "i want update",
+                    "want to change", "want to update",
+                    "want change", "want update",
+                ]
+            ):
+                reply = (
+                    "No problem. Please share your correct contact number "
+                    "so we can update it and reach you on the right number."
+                )
+                history.append({"role": "user", "content": user_query})
+                history.append({"role": "assistant", "content": reply})
+                await save_chat_history(bot_id, session_id, history, k=10)
+                return {"fullText": reply, "cleanText": reply, "action": "contact_update_requested"}
+
+            # ============================================================
+            # 4d. INTERCEPT: User asking for their own info
+            #     "tell my name", "what is my name", "tell my number", etc.
+            # ============================================================
+            _my_name_phrases = [
+                "tell my name", "tell me my name", "what is my name",
+                "what's my name", "whats my name", "say my name",
+                "do you know my name", "my name", "you know my name",
+                "remember my name", "who am i",
+            ]
+            _my_number_phrases = [
+                "tell my number", "tell me my number", "what is my number",
+                "what's my number", "whats my number", "my number",
+                "my phone number", "my contact number", "my phone",
+                "do you know my number", "you know my number",
+                "what number do you have", "which number do you have",
+                "show my number", "show my contact",
+            ]
+
+            if any(p in norm_query for p in _my_name_phrases):
+                if visitor_name:
+                    reply = f"Your name is {visitor_name}. How can I help you today?"
+                else:
+                    reply = "I don't have your name on file. Could you please share your name?"
+                history.append({"role": "user", "content": user_query})
+                history.append({"role": "assistant", "content": reply})
+                await save_chat_history(bot_id, session_id, history, k=10)
+                return {"fullText": reply, "cleanText": reply, "action": "user_info"}
+
+            _is_pure_statement = _self_intro_match and '?' not in user_query
+
+            # ============================================================
+            # 4i. INTERCEPT: Joke/Story/Entertainment requests
+            #     "tell me a joke", "tell me a story", "make me laugh", etc.
+            #     Respond with support-only message.
+            # ============================================================
+            _entertainment_patterns = [
+                r"\bjoke\b", r"\bstory\b", r"\bfunny\b", r"\bentertain\b", r"\blaugh\b", r"\bsmile\b",
+                r"tell me a joke", r"tell me a story", r"make me laugh", r"make me smile",
+                r"say something funny", r"say a joke", r"give me a joke", r"share a joke", r"share a story",
+                r"tell joke", r"tell story", r"can you joke", r"can you tell a joke", r"can you tell me a joke",
+                r"can you tell a story", r"can you tell me a story", r"do you know a joke", r"do you know any jokes",
+                r"do you know a story", r"do you know any stories",
+            ]
+            _entertainment_match = any(re.search(p, user_query.lower()) for p in _entertainment_patterns)
+            if _entertainment_match:
+                reply = (
+                    "I'm here to help with support-related questions. How can I assist you?"
+                )
+                history.append({"role": "user", "content": user_query})
+                history.append({"role": "assistant", "content": reply})
+                await save_chat_history(bot_id, session_id, history, k=10)
+                return {"fullText": reply, "cleanText": reply, "action": "support_only"}
+
+            if _is_pure_statement:
+                role_info = _self_intro_match.group(1).strip()
+                name_prefix = f"That's great, {visitor_name}! " if visitor_name else "That's great! "
+                reply = (
+                    f"{name_prefix}Thanks for sharing that you're a {role_info}. "
+                    "How can I assist you today?"
+                )
+                history.append({"role": "user", "content": user_query})
+                history.append({"role": "assistant", "content": reply})
+                await save_chat_history(bot_id, session_id, history, k=10)
+                return {"fullText": reply, "cleanText": reply, "action": "user_info"}
+
+            # ============================================================
+            # 4e. INTERCEPT: User asking about themselves from history
+            #     "what is my designation", "what do i do", "what i do"
+            # ============================================================
+            _my_role_phrases = [
+                "what is my designation", "what's my designation",
+                "whats my designation", "my designation",
+                "what is my role", "what's my role", "whats my role",
+                "my role", "what is my job", "what's my job",
+                "what do i do", "what i do", "what is my profession",
+                "what's my profession", "what is my position",
+                "what am i", "tell me my role", "tell me my designation",
+                "tell me what i do",
+            ]
+            if any(p in norm_query for p in _my_role_phrases):
+                # Scan history for user's self-introduction
+                _intro_re = _re_mod.compile(
+                    r'i\s+(?:am|work\s+as|work\s+in|work\s+at|work\s+for)'
+                    r'\s+(?:a\s+|an\s+)?(.+)',
+                    _re_mod.IGNORECASE,
+                )
+                found_role: Optional[str] = None
+                for h in reversed(history or []):
+                    if isinstance(h, dict) and h.get("role") == "user":
+                        m = _intro_re.search(str(h.get("content", "")))
+                        if m:
+                            found_role = m.group(1).strip().rstrip('.')
+                            break
+                if found_role:
+                    reply = f"Based on what you shared earlier, you're a {found_role}. Is there anything else I can help with?"
+                else:
+                    reply = "I don't have that information yet. Could you tell me about your role or designation?"
+                history.append({"role": "user", "content": user_query})
+                history.append({"role": "assistant", "content": reply})
+                await save_chat_history(bot_id, session_id, history, k=10)
+                return {"fullText": reply, "cleanText": reply, "action": "user_info"}
+
+            # ============================================================
+            # 4f (old). REMOVED — merged into step 4c above.
+            # ============================================================
+
+            # ============================================================
+            # 4g. INTERCEPT: User proactively providing a phone number
+            #     "my new number is 9807079807", "9807079807", "new number 98..."
+            #     This catches phone numbers even when the bot didn't ask.
+            # ============================================================
+            _proactive_phone = _extract_phone(user_query)
+            if _proactive_phone:
+                # Check if the user is clearly providing/updating a number
+                _providing_number_cues = [
+                    "new number", "my number is", "my new number",
+                    "number is", "my contact is", "my phone is",
+                    "update to", "change to", "updated number",
+                    "correct number", "right number",
+                ]
+                # Also catch: bare phone number or number after bot asked
+                # for contact update
+                _update_context = any(
+                    m in norm_last
+                    for m in [
+                        "please share your correct contact number",
+                        "please share your contact details",
+                        "please provide your contact details",
+                        "please enter a valid",
+                        "share the correct number",
+                        "update it and reach you",
+                    ]
+                )
+                _has_providing_cue = any(c in norm_query for c in _providing_number_cues)
+                # Pure number (just digits, maybe with +91 etc.)
+                _is_bare_number = len(re.sub(r'[\s\-\+]', '', user_query).strip()) <= 15 and _has_digit_intent(user_query)
+
+                if _update_context or _has_providing_cue or _is_bare_number:
+                    # Save the new number to Redis
+                    contact_payload: Dict[str, Any] = {}
+                    try:
+                        existing = await load_contact_details(bot_id, session_id)
+                        if existing and isinstance(existing, dict):
+                            contact_payload = dict(existing)
+                    except Exception:
+                        pass
+                    contact_payload["raw"] = user_query
+                    contact_payload["phone"] = _proactive_phone
+                    contact_payload.pop("confirmed", None)
+
+                    try:
+                        await save_contact_details(bot_id, session_id, contact_payload)
+                    except Exception:
+                        logger.exception("Failed to save proactive phone number")
+
+                    reply = (
+                        f"Thank you. We've updated your contact number to {_proactive_phone}. "
+                        "Is this correct? If not, please share the correct number."
+                    )
+                    history.append({"role": "user", "content": user_query})
+                    history.append({"role": "assistant", "content": reply})
+                    await save_chat_history(bot_id, session_id, history, k=10)
+                    return {"fullText": reply, "cleanText": reply, "action": "contact_updated"}
+
+            # ============================================================
+            # 4h. INTERCEPT: Gibberish / unintelligible input
+            #     "asdkjasd123", "xyzpqr", "hfjksdhf", etc.
+            #     Detect and ask user to rephrase instead of
+            #     sending garbage to the LLM.
+            # ============================================================
+            _COMMON_WORDS = {
+                'i', 'me', 'my', 'we', 'our', 'you', 'your', 'he', 'she',
+                'it', 'they', 'them', 'a', 'an', 'the', 'is', 'am', 'are',
+                'was', 'were', 'be', 'been', 'do', 'does', 'did', 'have',
+                'has', 'had', 'will', 'would', 'can', 'could', 'shall',
+                'should', 'may', 'might', 'must', 'to', 'of', 'in', 'on',
+                'at', 'for', 'by', 'with', 'from', 'up', 'out', 'about',
+                'into', 'over', 'after', 'and', 'but', 'or', 'not', 'no',
+                'yes', 'so', 'if', 'then', 'than', 'that', 'this', 'what',
+                'which', 'who', 'how', 'when', 'where', 'why', 'all',
+                'each', 'every', 'some', 'any', 'few', 'more', 'most',
+                'much', 'many', 'very', 'just', 'also', 'too', 'only',
+                'own', 'same', 'new', 'old', 'good', 'bad', 'big',
+                'small', 'long', 'first', 'last', 'next', 'now', 'here',
+                'there', 'back', 'want', 'need', 'know', 'think', 'make',
+                'go', 'get', 'come', 'take', 'see', 'look', 'find',
+                'give', 'tell', 'say', 'ask', 'use', 'try', 'work',
+                'help', 'call', 'talk', 'show', 'let', 'keep', 'put',
+                'set', 'run', 'pay', 'buy', 'sell', 'open', 'close',
+                'start', 'stop', 'turn', 'move', 'live', 'change',
+                'play', 'like', 'love', 'hate', 'feel', 'leave',
+                'hi', 'hello', 'hey', 'bye', 'ok', 'okay', 'thanks',
+                'thank', 'please', 'sorry', 'sure', 'right', 'well',
+                'name', 'number', 'phone', 'email', 'contact', 'service',
+                'services', 'order', 'place', 'price', 'cost', 'product',
+                'account', 'booking', 'book', 'schedule', 'meeting',
+                'appointment', 'time', 'day', 'today', 'tomorrow',
+                'week', 'month', 'year', 'date', 'morning', 'evening',
+                'night', 'afternoon', 'joke', 'story', 'question',
+                'answer', 'information', 'info', 'detail', 'details',
+                'update', 'delete', 'create', 'add', 'remove', 'plan',
+                'offer', 'available', 'support', 'team', 'agent',
+                'human', 'person', 'manager', 'developer', 'engineer',
+                'data', 'system', 'website', 'app', 'company', 'business',
+                'animal', 'national', 'country', 'city', 'world',
+            }
+
+            # Extract words (letters only, min 2 chars to skip "a"/"I")
+            _input_words = re.findall(r'[a-zA-Z]{2,}', user_query.lower())
+            _is_gibberish = False
+
+            if _input_words:
+                _recognized = sum(1 for w in _input_words if w in _COMMON_WORDS)
+                _ratio = _recognized / len(_input_words)
+                # If less than 30% of words are recognized AND the query
+                # is short-ish, treat as gibberish
+                if _ratio < 0.30 and len(_input_words) <= 10:
+                    _is_gibberish = True
+            elif user_query.strip():
+                # No alphabetic words at all (pure numbers/symbols beyond
+                # a phone number — phone was already caught in step 4g)
+                if not _extract_phone(user_query):
+                    _is_gibberish = True
+
+            if _is_gibberish:
+                reply = "Sorry, I didn't understand that. Could you please rephrase your question?"
+                history.append({"role": "user", "content": user_query})
+                history.append({"role": "assistant", "content": reply})
+                await save_chat_history(bot_id, session_id, history, k=10)
+                return {"fullText": reply, "cleanText": reply, "action": "gibberish"}
+
+                # ============================================================
+                # 4i. INTERCEPT: Joke/Story/Entertainment requests
+                #     "tell me a joke", "tell me a story", "make me laugh", etc.
+                #     Respond with support-only message.
+                # ============================================================
+                _entertainment_phrases = [
+                    "tell me a joke", "joke", "make me laugh", "funny story",
+                    "tell me a story", "story", "entertain me", "make me smile",
+                    "say something funny", "say a joke", "give me a joke",
+                    "share a joke", "share a story", "tell joke", "tell story",
+                    "can you joke", "can you tell a joke", "can you tell me a joke",
+                    "can you tell a story", "can you tell me a story",
+                    "do you know a joke", "do you know any jokes", "do you know a story",
+                    "do you know any stories",
+                ]
+                if any(p in norm_query for p in _entertainment_phrases):
+                    reply = (
+                        "I'm here to help with support-related questions. How can I assist you?"
+                    )
+                    history.append({"role": "user", "content": user_query})
+                    history.append({"role": "assistant", "content": reply})
+                    await save_chat_history(bot_id, session_id, history, k=10)
+                    return {"fullText": reply, "cleanText": reply, "action": "support_only"}
             # ============================================================
             # 5. RAG RETRIEVAL
             # ============================================================
@@ -672,75 +1018,85 @@ async def generate_and_stream_ai_response(
                 )
 
             logger.debug("Detected intent: %s", action)
+            print("knowledge_base:ddddddddddddddddddddddddddddddddddddddddddddddddddd", knowledge_base)
 
             # ============================================================
-            # 7. KB EMPTY + NORMAL_QA → FALLBACK (no LLM call needed)
+            # 6c. CONVERSATION CLOSE → respond naturally, no KB/fallback
             # ============================================================
-            if not has_kb and action == "normal_qa":
-                # ── Rotating fallback pools so the user never sees the
-                #    exact same message twice in a row.
-                name_hi = f"{visitor_name}, " if visitor_name else ""
-                name_hi_lower = name_hi.lower()  # for mid-sentence use
+            if action == "conversation_close":
+                # Use LLM to generate a short, natural closing response
+                messages: list[dict] = [prompt_dict["system_message"]]
+                for h in history:
+                    if not isinstance(h, dict):
+                        continue
+                    role = h.get("role")
+                    content = h.get("content")
+                    if not role or not isinstance(content, str) or not content.strip():
+                        continue
+                    messages.append({"role": role, "content": content})
+                messages.append({"role": "user", "content": user_query})
 
-                _no_info_variants = [
-                    f"I'm sorry {name_hi_lower}I don't have that information available in our system right now.",
-                    f"Unfortunately {name_hi_lower}that isn't something I'm able to answer at the moment.",
-                    f"I appreciate your question{', ' + visitor_name if visitor_name else ''}! Unfortunately, that's outside the information I currently have access to.",
-                    f"Thanks for asking{', ' + visitor_name if visitor_name else ''}. I'm not able to find an answer to that in our system right now.",
-                    f"That's a great question{', ' + visitor_name if visitor_name else ''}. However, I don't have the details to answer it at this time.",
-                ]
-
-                _ask_contact_variants = [
-                    "If you'd like, please share your contact details and our team will connect with you shortly.",
-                    "Would you like to share your contact information so our team can get back to you with an answer?",
-                    "Please feel free to leave your contact details and a team member will follow up with you.",
-                    "You're welcome to provide your contact info and we'll have the right person reach out to you.",
-                    "If you share your contact details, our team will be happy to assist you further.",
-                ]
-
-                _already_have_contact_variants = [
-                    "We already have your contact details on file and our team will reach out to you shortly.",
-                    "Don't worry — we have your contact information and someone from our team will get back to you soon.",
-                    "Our team already has your details and will be in touch with you shortly.",
-                    "We've noted your contact information and a team member will follow up soon.",
-                    "Rest assured, we have your details on record and our team will connect with you.",
-                ]
-
-                idx = fallback_count % len(_no_info_variants)
-
-                if known_phone:
-                    fallback_reply = (
-                        f"{_no_info_variants[idx]} "
-                        f"We already have your contact number as {known_phone}. "
-                        "Is this correct? If not, please share the correct number so our team can reach out to you."
-                    )
-                elif contact_already_collected:
-                    fallback_reply = (
-                        f"{_no_info_variants[idx]} "
-                        f"{_already_have_contact_variants[idx]}"
-                    )
-                else:
-                    fallback_reply = (
-                        f"{_no_info_variants[idx]} "
-                        f"{_ask_contact_variants[idx]}"
-                    )
+                close_text = await generate_chat_response(
+                    messages,
+                    max_tokens=prompt_dict.get("max_tokens", 60),
+                    temperature=0.3,
+                    top_p=0.9,
+                )
+                close_text = clean_llm_output(close_text)
+                if not close_text:
+                    close_text = "No worries! Feel free to reach out anytime you need help."
 
                 history.append({"role": "user", "content": user_query})
-                history.append({"role": "assistant", "content": fallback_reply})
+                history.append({"role": "assistant", "content": close_text})
                 await save_chat_history(bot_id, session_id, history, k=10)
-
                 return {
-                    "fullText": fallback_reply,
-                    "cleanText": fallback_reply,
-                    "action": "fallback_msg",
+                    "fullText": close_text,
+                    "cleanText": close_text,
+                    "action": "conversation_close",
                 }
+
+            # ============================================================
+            # 7. KB EMPTY + NORMAL_QA → let LLM respond, append contact
+            #    details after. (No hardcoded fallback — LLM uses the
+            #    FALLBACK PROTOCOL in its system prompt to craft a
+            #    natural "I don't have that info" message.)
+            # ============================================================
+            # Flag used later in Step 9 to append contact-details suffix
+            _kb_empty_fallback = (not has_kb and action == "normal_qa")
 
             # ============================================================
             # 8. LLM GENERATION (KB has content or non-QA intent)
             # ============================================================
             messages: list[dict] = [prompt_dict["system_message"]]
 
-            for h in history:
+            # Filter history: strip trailing consecutive close/goodbye
+            # turns so the LLM doesn't see a pattern of closings and
+            # keep generating "Take care! Bye!" for new questions.
+            _close_sigs = [
+                "take care", "have a great day", "i'm here whenever",
+                "im here whenever", "feel free to reach out",
+                "don't hesitate", "no worries", "glad that's all set",
+                "glad thats all set", "alright, have a great day",
+            ]
+            _filtered_history = list(history or [])
+            while _filtered_history:
+                last = _filtered_history[-1]
+                if not isinstance(last, dict):
+                    _filtered_history.pop()
+                    continue
+                content = _norm(str(last.get("content", "")))
+                role = last.get("role", "")
+                # Remove trailing close from assistant OR the user msg
+                # that triggered it (e.g., "bye", "ok")
+                if role == "assistant" and any(s in content for s in _close_sigs):
+                    _filtered_history.pop()
+                    # Also pop the user message that preceded it
+                    if _filtered_history and isinstance(_filtered_history[-1], dict) and _filtered_history[-1].get("role") == "user":
+                        _filtered_history.pop()
+                else:
+                    break
+
+            for h in _filtered_history:
                 if not isinstance(h, dict):
                     continue
                 role = h.get("role")
@@ -763,8 +1119,57 @@ async def generate_and_stream_ai_response(
             # ============================================================
             clean_text = clean_llm_output(full_text)
 
-            # Detect if LLM itself produced a fallback-style message
-            if clean_text:
+            # ── 9a. KB was empty → append contact details to LLM response
+            if _kb_empty_fallback and clean_text:
+                action = "fallback_msg"
+
+                # Strip any contact-details sentence the LLM may have
+                # generated so we don't double up.  We work on the
+                # *original* clean_text (not normalized) using a regex
+                # that removes the sentence containing the contact-ask.
+                _contact_strip_re = re.compile(
+                    r'[^.]*?'
+                    r'(?:share|provide|leave)\s+(?:your\s+)?'
+                    r'(?:correct\s+)?(?:contact\s+)?'
+                    r'(?:details|information|info|number)'
+                    r'[^.]*\.?\s*',
+                    re.IGNORECASE,
+                )
+                clean_text = _contact_strip_re.sub('', clean_text).strip()
+
+                # Also strip stray trailing phrases like
+                # "and our team will connect with you shortly."
+                _trailing_team_re = re.compile(
+                    r'\s*(?:and\s+)?(?:our|a|the)\s+team\s+'
+                    r'(?:will|can|shall)\s+[^.]*\.?\s*$',
+                    re.IGNORECASE,
+                )
+                clean_text = _trailing_team_re.sub('', clean_text).strip()
+
+                if not clean_text:
+                    clean_text = "I'm sorry, I don't have that information available right now."
+
+                # Append the appropriate contact-details suffix
+                if contact_already_collected:
+                    clean_text = (
+                        f"{clean_text.rstrip()} "
+                        "We already have your contact details on file and our team will reach out to you shortly."
+                    )
+                elif known_phone:
+                    clean_text = (
+                        f"{clean_text.rstrip()} "
+                        f"We already have your contact number as {known_phone}. "
+                        "Is this correct? If not, please share the correct number so our team can reach out to you."
+                    )
+                else:
+                    clean_text = (
+                        f"{clean_text.rstrip()} "
+                        "If you'd like, please share your contact details and our team will connect with you shortly."
+                    )
+                full_text = clean_text
+
+            # ── 9b. KB had content but LLM still produced a fallback
+            elif clean_text:
                 nc = _norm(clean_text)
                 fallback_phrases = [
                     "share your contact details and our team will connect with you shortly",
@@ -775,34 +1180,36 @@ async def generate_and_stream_ai_response(
                 if any(fp in nc for fp in fallback_phrases):
                     action = "fallback_msg"
 
-                    # Use the same rotating pool as Step 7
-                    name_hi = f"{visitor_name}, " if visitor_name else ""
-                    name_hi_lower = name_hi.lower()
-                    _no_info_v = [
-                        f"I'm sorry {name_hi_lower}I don't have that information available in our system right now.",
-                        f"Unfortunately {name_hi_lower}that isn't something I'm able to answer at the moment.",
-                        f"I appreciate your question{', ' + visitor_name if visitor_name else ''}! Unfortunately, that's outside the information I currently have access to.",
-                        f"Thanks for asking{', ' + visitor_name if visitor_name else ''}. I'm not able to find an answer to that in our system right now.",
-                        f"That's a great question{', ' + visitor_name if visitor_name else ''}. However, I don't have the details to answer it at this time.",
-                    ]
-                    _contact_v = [
-                        "We already have your contact details on file and our team will reach out to you shortly.",
-                        "Don't worry — we have your contact information and someone from our team will get back to you soon.",
-                        "Our team already has your details and will be in touch with you shortly.",
-                    ]
-                    ix = fallback_count % len(_no_info_v)
+                    # Strip LLM-generated contact sentence first
+                    _contact_strip_re2 = re.compile(
+                        r'[^.]*?'
+                        r'(?:share|provide|leave)\s+(?:your\s+)?'
+                        r'(?:correct\s+)?(?:contact\s+)?'
+                        r'(?:details|information|info|number)'
+                        r'[^.]*\.?\s*',
+                        re.IGNORECASE,
+                    )
+                    stripped = _contact_strip_re2.sub('', clean_text).strip()
+                    _trailing_team_re2 = re.compile(
+                        r'\s*(?:and\s+)?(?:our|a|the)\s+team\s+'
+                        r'(?:will|can|shall)\s+[^.]*\.?\s*$',
+                        re.IGNORECASE,
+                    )
+                    stripped = _trailing_team_re2.sub('', stripped).strip()
+                    if stripped:
+                        clean_text = stripped
 
-                    if known_phone:
+                    if contact_already_collected:
                         clean_text = (
-                            f"{_no_info_v[ix]} "
-                            f"We already have your contact number as {known_phone}. "
-                            "Is this correct? If not, please share the correct number so our team can reach out to you."
+                            f"{clean_text.rstrip()} "
+                            "We already have your contact details on file and our team will reach out to you shortly."
                         )
                         full_text = clean_text
-                    elif contact_already_collected:
+                    elif known_phone:
                         clean_text = (
-                            f"{_no_info_v[ix]} "
-                            f"{_contact_v[ix % len(_contact_v)]}"
+                            f"{clean_text.rstrip()} "
+                            f"We already have your contact number as {known_phone}. "
+                            "Is this correct? If not, please share the correct number so our team can reach out to you."
                         )
                         full_text = clean_text
 
@@ -846,16 +1253,16 @@ async def generate_and_stream_ai_response(
             if is_unsatisfied and clean_text:
                 nc = _norm(clean_text)
                 if "please provide your contact details" not in nc and "please share your contact details" not in nc:
-                    if known_phone:
+                    if contact_already_collected:
+                        clean_text = (
+                            f"{clean_text.rstrip()} "
+                            "We already have your contact details on file and our team will reach out to you shortly."
+                        )
+                    elif known_phone:
                         clean_text = (
                             f"{clean_text.rstrip()} "
                             f"We already have your contact number as {known_phone}. "
                             "Is this correct? If not, please share the correct number so our team can reach out to you."
-                        )
-                    elif contact_already_collected:
-                        clean_text = (
-                            f"{clean_text.rstrip()} "
-                            "We already have your contact details on file and our team will reach out to you shortly."
                         )
                     else:
                         clean_text = (

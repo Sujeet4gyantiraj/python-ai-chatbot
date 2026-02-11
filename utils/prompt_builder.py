@@ -100,14 +100,17 @@ Format your answer so it feels like a natural support conversation while still b
 # FALLBACK PROTOCOL
 If the knowledge base contains NO relevant information to answer the question:
 - Politely let the user know you don't have that information right now.
-- Then invite them to share their contact details so your team can follow up.
+- Do NOT include any contact-details request in your response (the system will handle that separately).
 - Vary your wording each time — do NOT repeat the exact same sentence you used before. Use different phrasings such as:
-  • "I'm sorry, I don't have that information available in our system right now. If you'd like, please share your contact details and our team will connect with you shortly."
-  • "Unfortunately, that's outside the information I currently have access to. Would you like to share your contact info so our team can get back to you?"
-  • "Thanks for asking! I'm not able to find an answer to that right now. Please feel free to leave your contact details and a team member will follow up."
-  • "That's a great question. However, I don't have the details for that at this time. You're welcome to provide your contact information and we'll have the right person reach out."
+  • "I'm sorry, I don't have that information available in our system right now."
+  • "Unfortunately, that's outside the information I currently have access to."
+  • "Thanks for asking! I'm not able to find an answer to that right now."
+  • "That's a great question. However, I don't have the details for that at this time."
 - Pick a phrasing that feels natural and different from your previous replies in the conversation history.
 If there is any relevant information in the knowledge base, you MUST answer using that information and MUST NOT use the fallback message.
+
+# PERSONAL STATEMENTS
+If the user is making a statement about themselves (e.g., "I am a software developer", "I work at Google"), this is NOT a question. Do NOT search the knowledge base for it. Simply acknowledge what they shared and ask how you can help.
 
 # FORBIDDEN ACTIONS
 - Do NOT use external knowledge beyond the knowledge base
@@ -115,6 +118,7 @@ If there is any relevant information in the knowledge base, you MUST answer usin
 - Do NOT say "based on the knowledge base" or reference the source
 - Do NOT apologize for limitations
 - Do NOT offer to connect them to support (unless using fallback)
+- Do NOT include any "share your contact details" or "our team will connect" sentences — the system adds those automatically
 
 <|eot_id|><|start_header_id|>user<|end_header_id|>
 
@@ -323,6 +327,68 @@ Provide your acknowledgment, then add the action tag on a new line.
         }
 
     @staticmethod
+    def build_conversation_close_prompt(
+        custom_instruction: Optional[str] = None,
+        user_message: Optional[str] = None
+    ) -> Dict[str, str]:
+        """Prompt for when the user indicates they don't need further help,
+        says goodbye, or declines assistance."""
+
+        personality = custom_instruction or (
+            "You are a warm, friendly, and professional customer support assistant."
+        )
+
+        template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+# ROLE AND PERSONALITY
+{personality}
+
+# SITUATION
+The user is ending the conversation, declining further help, or saying goodbye.
+They may say things like "no", "bye", "i dont need anything", "nothing else", "im done", etc.
+
+User message: "{user_message}"
+
+# YOUR TASK
+- Respond warmly and naturally to close the conversation.
+- Do NOT ask any questions or try to provide information.
+- Do NOT offer to connect them with support or ask for contact details.
+- Do NOT treat this as a question that needs answering.
+- Simply acknowledge their message and let them know you are here if they need help in the future.
+
+# RESPONSE RULES
+1. LENGTH: 1 short sentence (maximum 20 words).
+2. TONE: Warm, friendly, professional.
+3. CONSTRAINTS:
+   - Do NOT ask "how can I help" again.
+   - Do NOT provide any information or suggestions.
+   - Do NOT say "I don't have that information".
+   - Do NOT ask for contact details.
+   - Just politely close or acknowledge.
+
+# EXAMPLES OF GOOD RESPONSES
+- "No worries! Feel free to reach out anytime you need help."
+- "Alright, have a great day! I'm here whenever you need me."
+- "Sounds good! Don't hesitate to come back if you need anything."
+- "Take care! I'm always here if you have questions later."
+
+# OUTPUT FORMAT
+Provide ONLY your direct response to the user. No preamble, no explanation.
+
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{user_message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+"""
+        return {
+            "role": "system",
+            "content": template.format(
+                personality=personality,
+                user_message=user_message or ""
+            )
+        }
+
+    @staticmethod
     def build_fallback_prompt(
         custom_instruction: Optional[str] = None,
         user_message: Optional[str] = None
@@ -500,7 +566,7 @@ def build_augmented_system_instruction(
         # For scheduler/agent_request, allow slightly lower scores
         # so requests like "arrange call from sales" don't fall
         # back to normal_qa too aggressively.
-        min_confidence = 0.30 if detected_intent in {"scheduler", "agent_request"} else 0.40
+        min_confidence = 0.30 if detected_intent in {"scheduler", "agent_request", "conversation_close"} else 0.40
 
         if detected_intent != "normal_qa" and confidence_score < min_confidence:
             logger.warning(
@@ -548,6 +614,12 @@ def build_augmented_system_instruction(
                 custom_instruction, user_message
             )
             max_tokens = 100
+
+        elif detected_intent == "conversation_close":
+            system_msg = prompts.build_conversation_close_prompt(
+                custom_instruction, user_message
+            )
+            max_tokens = 60
             
         else:
             logger.warning("Unknown intent: %s, using fallback", detected_intent)

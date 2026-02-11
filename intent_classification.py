@@ -136,6 +136,50 @@ class SemanticRouteClassifier:
                                'want to schedule', 'need to schedule', 'schedule my', 'book my']
             ),
             
+            'conversation_close': Route(
+                name='conversation_close',
+                examples=[
+                    'no', 'nope', 'no thanks', 'no thank you',
+                    'nothing', 'nothing else', 'no i am fine',
+                    'i dont need anything', 'i do not need anything',
+                    'i dont need any answer', 'i do not need any answer',
+                    'i dont want anything', 'i do not want anything',
+                    'no need', 'not needed', 'its fine', 'it is fine',
+                    'never mind', 'nevermind', 'leave it', 'forget it',
+                    'thats all', 'that is all', 'nothing more',
+                    'im good', 'i am good', 'im fine', 'i am fine',
+                    'bye', 'goodbye', 'good bye', 'see you', 'take care',
+                    'ok bye', 'okay bye', 'thanks bye', 'thank you bye',
+                    'i am done', 'im done', 'done', 'all done',
+                    'no more questions', 'no further questions',
+                    'i dont have any more questions',
+                    'thats it', 'that is it', 'enough',
+                    'stop', 'end', 'close', 'exit',
+                    'no i am ok', 'no its ok', 'no it is ok',
+                    'not interested', 'not right now', 'maybe later',
+                    'i will come back later', 'later',
+                ],
+                patterns=[
+                    r'^(no|nope|nah)\b',
+                    r'^(bye|goodbye|good\s*bye|see\s+you|take\s+care)\b',
+                    r'^(done|finished|all\s+done|im\s+done|i\s+am\s+done)$',
+                    r'^(nothing|nothing\s+else|no\s+need|not\s+needed)$',
+                    r'^(stop|end|close|exit|leave\s+it|forget\s+it)$',
+                    r'\b(dont|do\s+not|don\'t)\s+(need|want|require)\s+(any|anything|an)\b',
+                    r'^(im|i\s+am)\s+(good|fine|ok|okay|done)$',
+                    r'^(not\s+interested|not\s+right\s+now|maybe\s+later|later)$',
+                    r'^(never\s*mind|thats\s+(all|it)|that\s+is\s+(all|it))$',
+                ],
+                keywords=['no', 'bye', 'goodbye', 'done', 'nothing', 'stop',
+                          'end', 'leave', 'forget', 'fine', 'later', 'enough',
+                          'nevermind', 'exit', 'close'],
+                phrase_patterns=['no thanks', 'no thank you', 'i am fine', 'im good',
+                                 'nothing else', 'thats all', 'no need', 'not needed',
+                                 'leave it', 'forget it', 'never mind', 'all done',
+                                 'im done', 'not interested', 'maybe later',
+                                 'i dont need', 'i dont want', 'no more questions']
+            ),
+
             'normal_qa': Route(
                 name='normal_qa',
                 examples=[
@@ -354,6 +398,27 @@ class SemanticRouteClassifier:
             return 'normal_qa', 0.0, {}
         
         preprocessed_query = self._preprocess_text(query)
+
+        # ── Early exact-match for very short conversation-close phrases ──
+        _close_exact = {
+            'no', 'nope', 'nah', 'bye', 'goodbye', 'done', 'nothing',
+            'stop', 'end', 'exit', 'close', 'later', 'enough',
+            'ok bye', 'okay bye', 'thanks bye', 'no thanks',
+            'no thank you', 'im fine', 'i am fine', 'im good',
+            'i am good', 'im done', 'i am done', 'all done',
+            'thats all', 'that is all', 'thats it', 'that is it',
+            'nothing else', 'no need', 'not needed', 'never mind',
+            'nevermind', 'leave it', 'forget it', 'not interested',
+            'not right now', 'maybe later', 'no i am ok', 'no its ok',
+            'no it is ok', 'no more questions',
+            'i dont need any answer', 'i do not need any answer',
+            'i dont need anything', 'i do not need anything',
+            'i dont want anything', 'i do not want anything',
+        }
+        if preprocessed_query in _close_exact:
+            if return_scores:
+                return 'conversation_close', 0.98, {'conversation_close': {'ensemble': 0.98, 'method': 'exact_match'}}
+            return 'conversation_close', 0.98, {}
         
         scores = {}
         detailed_scores = {}
@@ -400,11 +465,27 @@ class SemanticRouteClassifier:
             if not (has_marker and has_verb):
                 best_route = 'normal_qa'
                 confidence = scores['normal_qa']
-        
+
+        # If TF-IDF thinks this is scheduler, require at least one
+        # explicit scheduling/booking word.  Without it, demote to
+        # normal_qa so "How can I place an order?" stays as QA.
+        if best_route == 'scheduler':
+            words = set(self._tokenize(preprocessed_query))
+            schedule_markers = {
+                'schedule', 'scheduling', 'scheduled', 'reschedule',
+                'book', 'booking', 'appointment', 'reservation',
+                'reserve', 'slot', 'arrange', 'calendar',
+                'meeting',  # only when it means "arrange a meeting"
+            }
+            if not any(k in words for k in schedule_markers):
+                best_route = 'normal_qa'
+                confidence = scores['normal_qa']
+
         max_specific_score = max(
             scores.get('greeting', 0.0),
             scores.get('agent_request', 0.0),
-            scores.get('scheduler', 0.0)
+            scores.get('scheduler', 0.0),
+            scores.get('conversation_close', 0.0)
         )
         
         if confidence < 0.05 or max_specific_score < 0.05:
@@ -525,6 +606,24 @@ class BERTIntentClassifier:
                 patterns=[], keywords=[], phrase_patterns=[]
             ),
             
+            'conversation_close': Route(
+                name='conversation_close',
+                examples=[
+                    'no', 'nope', 'no thanks', 'no thank you',
+                    'nothing', 'nothing else', 'i dont need anything',
+                    'i dont need any answer', 'i dont want anything',
+                    'no need', 'im fine', 'i am fine', 'im good', 'i am good',
+                    'bye', 'goodbye', 'see you', 'take care',
+                    'i am done', 'im done', 'done', 'all done',
+                    'thats all', 'that is all', 'nothing more',
+                    'never mind', 'forget it', 'leave it',
+                    'no more questions', 'no i am ok',
+                    'not interested', 'not right now', 'maybe later',
+                    'stop', 'end', 'close', 'exit',
+                ],
+                patterns=[], keywords=[], phrase_patterns=[]
+            ),
+
             'normal_qa': Route(
                 name='normal_qa',
                 examples=[
@@ -599,6 +698,30 @@ class BERTIntentClassifier:
     def classify(self, query: str, return_scores: bool = False) -> Tuple[str, float, Dict]:
         if not query or not query.strip():
             return 'normal_qa', 0.0, {}
+
+        # ── Early exact-match for conversation-close phrases ──
+        _close_exact = {
+            'no', 'nope', 'nah', 'bye', 'goodbye', 'done', 'nothing',
+            'stop', 'end', 'exit', 'close', 'later', 'enough',
+            'ok bye', 'okay bye', 'thanks bye', 'no thanks',
+            'no thank you', 'im fine', 'i am fine', 'im good',
+            'i am good', 'im done', 'i am done', 'all done',
+            'thats all', 'that is all', 'thats it', 'that is it',
+            'nothing else', 'no need', 'not needed', 'never mind',
+            'nevermind', 'leave it', 'forget it', 'not interested',
+            'not right now', 'maybe later', 'no i am ok', 'no its ok',
+            'i dont need any answer', 'i do not need any answer',
+            'i dont need anything', 'i do not need anything',
+            'i dont want anything', 'i do not want anything',
+        }
+        q_norm = query.strip().lower()
+        # Remove trailing punctuation for matching
+        q_clean = re.sub(r'[^\w\s]', '', q_norm).strip()
+        q_clean = re.sub(r'\s+', ' ', q_clean)
+        if q_clean in _close_exact:
+            if return_scores:
+                return 'conversation_close', 0.98, {'method': 'bert_rule', 'reason': 'exact_close_match'}
+            return 'conversation_close', 0.98, {}
         
         # ------------------------------------------------------------------
         # Heuristic routing for call vs. schedule semantics
@@ -682,11 +805,27 @@ class BERTIntentClassifier:
             if not (has_marker and has_verb):
                 best_route = 'normal_qa'
                 confidence = similarities['normal_qa']
-        
+
+        # If BERT picks scheduler, require at least one explicit
+        # scheduling/booking word.  Prevents "How can I place an order?"
+        # from routing to scheduler due to semantic similarity.
+        if best_route == 'scheduler':
+            q_words = set(re.findall(r"\w+", query.lower()))
+            schedule_markers = {
+                'schedule', 'scheduling', 'scheduled', 'reschedule',
+                'book', 'booking', 'appointment', 'reservation',
+                'reserve', 'slot', 'arrange', 'calendar',
+                'meeting',
+            }
+            if not any(k in q_words for k in schedule_markers):
+                best_route = 'normal_qa'
+                confidence = similarities['normal_qa']
+
         max_specific_score = max(
             similarities.get('greeting', 0.0),
             similarities.get('agent_request', 0.0),
-            similarities.get('scheduler', 0.0)
+            similarities.get('scheduler', 0.0),
+            similarities.get('conversation_close', 0.0)
         )
         
         if confidence < 0.05 or max_specific_score < 0.05:
@@ -777,6 +916,34 @@ class HybridIntentClassifier:
         """
         if not query or not query.strip():
             return 'normal_qa', 0.0, {}
+
+        # ------------------------------------------------------------------
+        # Early guard: conversation_close detection for short phrases
+        # like "no", "bye", "i dont need any answer", etc.
+        # ------------------------------------------------------------------
+        _close_exact = {
+            'no', 'nope', 'nah', 'bye', 'goodbye', 'done', 'nothing',
+            'stop', 'end', 'exit', 'close', 'later', 'enough',
+            'ok bye', 'okay bye', 'thanks bye', 'no thanks',
+            'no thank you', 'im fine', 'i am fine', 'im good',
+            'i am good', 'im done', 'i am done', 'all done',
+            'thats all', 'that is all', 'thats it', 'that is it',
+            'nothing else', 'no need', 'not needed', 'never mind',
+            'nevermind', 'leave it', 'forget it', 'not interested',
+            'not right now', 'maybe later', 'no i am ok', 'no its ok',
+            'i dont need any answer', 'i do not need any answer',
+            'i dont need anything', 'i do not need anything',
+            'i dont want anything', 'i do not want anything',
+        }
+        q_clean = re.sub(r'[^\w\s]', '', query.strip().lower()).strip()
+        q_clean = re.sub(r'\s+', ' ', q_clean)
+        if q_clean in _close_exact:
+            if return_scores:
+                return 'conversation_close', 0.98, {
+                    'method': 'hybrid_rule',
+                    'reason': 'exact_close_match'
+                }
+            return 'conversation_close', 0.98, {}
 
         # ------------------------------------------------------------------
         # Early guard: user explicitly says they want to talk to "you" or
