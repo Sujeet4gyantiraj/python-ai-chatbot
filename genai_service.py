@@ -1,4 +1,3 @@
-
 # genai_service.py
 # FastAPI GenAI service using Pinecone for RAG (logic unchanged)
 
@@ -313,6 +312,18 @@ async def generate_and_stream_ai_response(
             logger.info("User details saved from payload | bot_id=%s | session_id=%s", bot_id, session_id)
         except Exception:
             logger.exception("Failed to save user details from payload")
+
+    # Entertainment/joke/story detection phrases (used in intercept and fallback)
+    _entertainment_phrases = [
+        "tell me a joke", "joke", "make me laugh", "funny story",
+        "tell me a story", "story", "entertain me", "make me smile",
+        "say something funny", "say a joke", "give me a joke",
+        "share a joke", "share a story", "tell joke", "tell story",
+        "can you joke", "can you tell a joke", "can you tell me a joke",
+        "can you tell a story", "can you tell me a story",
+        "do you know a joke", "do you know any jokes", "do you know a story",
+        "do you know any stories",
+    ]
 
     try:
         full_text = ""
@@ -663,6 +674,13 @@ async def generate_and_stream_ai_response(
                 await save_chat_history(bot_id, session_id, history, k=10)
                 return {"fullText": reply, "cleanText": reply, "action": "user_info"}
 
+            # Ensure _self_intro_match is defined for the following check
+            _self_intro_pattern = re.compile(
+                r'^i\s+(?:am|work\s+as|work\s+in|work\s+at|work\s+for)'
+                r'\s+(?:a\s+|an\s+)?(.+)$',
+                re.IGNORECASE,
+            )
+            _self_intro_match = _self_intro_pattern.match(user_query.strip())
             _is_pure_statement = _self_intro_match and '?' not in user_query
 
             # ============================================================
@@ -736,10 +754,6 @@ async def generate_and_stream_ai_response(
                 history.append({"role": "assistant", "content": reply})
                 await save_chat_history(bot_id, session_id, history, k=10)
                 return {"fullText": reply, "cleanText": reply, "action": "user_info"}
-
-            # ============================================================
-            # 4f (old). REMOVED — merged into step 4c above.
-            # ============================================================
 
             # ============================================================
             # 4g. INTERCEPT: User proactively providing a phone number
@@ -881,7 +895,7 @@ async def generate_and_stream_ai_response(
                     "do you know a joke", "do you know any jokes", "do you know a story",
                     "do you know any stories",
                 ]
-                if any(p in norm_query for p in _entertainment_phrases):
+                if any(_phrase_match(p, norm_query) for p in _entertainment_phrases):
                     reply = (
                         "I'm here to help with support-related questions. How can I assist you?"
                     )
@@ -1121,52 +1135,57 @@ async def generate_and_stream_ai_response(
 
             # ── 9a. KB was empty → append contact details to LLM response
             if _kb_empty_fallback and clean_text:
-                action = "fallback_msg"
-
-                # Strip any contact-details sentence the LLM may have
-                # generated so we don't double up.  We work on the
-                # *original* clean_text (not normalized) using a regex
-                # that removes the sentence containing the contact-ask.
-                _contact_strip_re = re.compile(
-                    r'[^.]*?'
-                    r'(?:share|provide|leave)\s+(?:your\s+)?'
-                    r'(?:correct\s+)?(?:contact\s+)?'
-                    r'(?:details|information|info|number)'
-                    r'[^.]*\.?\s*',
-                    re.IGNORECASE,
-                )
-                clean_text = _contact_strip_re.sub('', clean_text).strip()
-
-                # Also strip stray trailing phrases like
-                # "and our team will connect with you shortly."
-                _trailing_team_re = re.compile(
-                    r'\s*(?:and\s+)?(?:our|a|the)\s+team\s+'
-                    r'(?:will|can|shall)\s+[^.]*\.?\s*$',
-                    re.IGNORECASE,
-                )
-                clean_text = _trailing_team_re.sub('', clean_text).strip()
-
-                if not clean_text:
-                    clean_text = "I'm sorry, I don't have that information available right now."
-
-                # Append the appropriate contact-details suffix
-                if contact_already_collected:
-                    clean_text = (
-                        f"{clean_text.rstrip()} "
-                        "We already have your contact details on file and our team will reach out to you shortly."
-                    )
-                elif known_phone:
-                    clean_text = (
-                        f"{clean_text.rstrip()} "
-                        f"We already have your contact number as {known_phone}. "
-                        "Is this correct? If not, please share the correct number so our team can reach out to you."
-                    )
+                # Entertainment override: always respond with support-only message for joke/story
+                if any(_phrase_match(p, norm_query) for p in _entertainment_phrases):
+                    clean_text = "I'm here to help with support-related questions. How can I assist you?"
+                    full_text = clean_text
+                    action = "support_only"
                 else:
-                    clean_text = (
-                        f"{clean_text.rstrip()} "
-                        "If you'd like, please share your contact details and our team will connect with you shortly."
+                    action = "fallback_msg"
+                    # Strip any contact-details sentence the LLM may have
+                    # generated so we don't double up.  We work on the
+                    # *original* clean_text (not normalized) using a regex
+                    # that removes the sentence containing the contact-ask.
+                    _contact_strip_re = re.compile(
+                        r'[^.]*?'
+                        r'(?:share|provide|leave)\s+(?:your\s+)?'
+                        r'(?:correct\s+)?(?:contact\s+)?'
+                        r'(?:details|information|info|number)'
+                        r'[^.]*\.?\s*',
+                        re.IGNORECASE,
                     )
-                full_text = clean_text
+                    clean_text = _contact_strip_re.sub('', clean_text).strip()
+
+                    # Also strip stray trailing phrases like
+                    # "and our team will connect with you shortly."
+                    _trailing_team_re = re.compile(
+                        r'\s*(?:and\s+)?(?:our|a|the)\s+team\s+'
+                        r'(?:will|can|shall)\s+[^.]*\.?\s*$',
+                        re.IGNORECASE,
+                    )
+                    clean_text = _trailing_team_re.sub('', clean_text).strip()
+
+                    if not clean_text:
+                        clean_text = "I'm sorry, I don't have that information available right now."
+
+                    # Append the appropriate contact-details suffix
+                    if contact_already_collected:
+                        clean_text = (
+                            f"{clean_text.rstrip()} "
+                            "We already have your contact details on file and our team will reach out to you shortly."
+                        )
+                    elif known_phone:
+                        clean_text = (
+                            f"{clean_text.rstrip()} "
+                            f"We already have your contact number as {known_phone}. "
+                            "Is this correct? If not, please share the correct number so our team can reach out to you."
+                        )
+                    else:
+                        clean_text = (
+                            f"{clean_text.rstrip()} "
+                            "If you'd like, please share your contact details and our team will connect with you shortly."
+                        )
+                    full_text = clean_text
 
             # ── 9b. KB had content but LLM still produced a fallback
             elif clean_text:
