@@ -99,9 +99,24 @@ Format your answer so it feels like a natural support conversation while still b
 
 # FALLBACK PROTOCOL
 If the knowledge base contains NO relevant information to answer the question:
-- Respond with EXACTLY this message (word-for-word):
-"I'm sorry, I don't have that information available in our system right now. If you'd like, please share your contact details and our team will connect with you shortly."
+- Politely let the user know you don't have that information right now.
+- Do NOT invent, guess, or generate any answer, summary, or example. Do NOT provide any pricing, product, or service details unless they are present in the knowledge base.
+- Do NOT include any contact-details request in your response (the system will handle that separately).
+- Vary your wording each time — do NOT repeat the exact same sentence you used before. Use different phrasings such as:
+  • "I'm sorry, I don't have that information available in our system right now."
+  • "Unfortunately, that's outside the information I currently have access to."
+  • "Thanks for asking! I'm not able to find an answer to that right now."
+  • "That's a great question. However, I don't have the details for that at this time."
+- Do NOT vary your wording. Always use the fixed message above for all such cases.
+- Pick a phrasing that feels natural and different from your previous replies in the conversation history.
+- WARNING: If you generate any other response, it will be rejected and replaced by the system.
 If there is any relevant information in the knowledge base, you MUST answer using that information and MUST NOT use the fallback message.
+
+
+
+
+# PERSONAL STATEMENTS
+If the user is making a statement about themselves (e.g., "I am a software developer", "I work at Google"), this is NOT a question. Do NOT search the knowledge base for it. Simply acknowledge what they shared and ask how you can help.
 
 # FORBIDDEN ACTIONS
 - Do NOT use external knowledge beyond the knowledge base
@@ -109,6 +124,7 @@ If there is any relevant information in the knowledge base, you MUST answer usin
 - Do NOT say "based on the knowledge base" or reference the source
 - Do NOT apologize for limitations
 - Do NOT offer to connect them to support (unless using fallback)
+- Do NOT include any "share your contact details" or "our team will connect" sentences — the system adds those automatically
 
 <|eot_id|><|start_header_id|>user<|end_header_id|>
 
@@ -317,6 +333,68 @@ Provide your acknowledgment, then add the action tag on a new line.
         }
 
     @staticmethod
+    def build_conversation_close_prompt(
+        custom_instruction: Optional[str] = None,
+        user_message: Optional[str] = None
+    ) -> Dict[str, str]:
+        """Prompt for when the user indicates they don't need further help,
+        says goodbye, or declines assistance."""
+
+        personality = custom_instruction or (
+            "You are a warm, friendly, and professional customer support assistant."
+        )
+
+        template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+# ROLE AND PERSONALITY
+{personality}
+
+# SITUATION
+The user is ending the conversation, declining further help, or saying goodbye.
+They may say things like "no", "bye", "i dont need anything", "nothing else", "im done", etc.
+
+User message: "{user_message}"
+
+# YOUR TASK
+- Respond warmly and naturally to close the conversation.
+- Do NOT ask any questions or try to provide information.
+- Do NOT offer to connect them with support or ask for contact details.
+- Do NOT treat this as a question that needs answering.
+- Simply acknowledge their message and let them know you are here if they need help in the future.
+
+# RESPONSE RULES
+1. LENGTH: 1 short sentence (maximum 20 words).
+2. TONE: Warm, friendly, professional.
+3. CONSTRAINTS:
+   - Do NOT ask "how can I help" again.
+   - Do NOT provide any information or suggestions.
+   - Do NOT say "I don't have that information".
+   - Do NOT ask for contact details.
+   - Just politely close or acknowledge.
+
+# EXAMPLES OF GOOD RESPONSES
+- "No worries! Feel free to reach out anytime you need help."
+- "Alright, have a great day! I'm here whenever you need me."
+- "Sounds good! Don't hesitate to come back if you need anything."
+- "Take care! I'm always here if you have questions later."
+
+# OUTPUT FORMAT
+Provide ONLY your direct response to the user. No preamble, no explanation.
+
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{user_message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+"""
+        return {
+            "role": "system",
+            "content": template.format(
+                personality=personality,
+                user_message=user_message or ""
+            )
+        }
+
+    @staticmethod
     def build_fallback_prompt(
         custom_instruction: Optional[str] = None,
         user_message: Optional[str] = None
@@ -353,6 +431,7 @@ User message: "{user_message}"
 
 # YOUR TASK
 Let the user know you are unable to answer after several attempts and politely ask them to provide their contact details so a human team member can follow up.
+IMPORTANT: Vary your wording — do NOT repeat the same sentence you used in previous responses. Use fresh, natural phrasing each time.
 
 # RESPONSE RULES
 1. TONE: Patient, helpful, non-judgmental
@@ -365,10 +444,13 @@ Let the user know you are unable to answer after several attempts and politely a
    - Do NOT guess at their intent
    - Do NOT provide generic lists of what you can do
    - Do NOT apologize excessively
+   - Use DIFFERENT wording from any previous responses shown in the conversation
 
-# EXAMPLES OF GOOD RESPONSES
+# EXAMPLES OF GOOD RESPONSES (use varied phrasing, don't copy these verbatim)
 - "I'm sorry I couldn't answer your question after several tries. Please provide your contact details and our team will reach out to you."
-- "It looks like I wasn't able to help with your request. If you'd like, please share your contact information and a team member will follow up."
+- "It seems I wasn't able to help with that. Would you like to leave your contact information so a team member can follow up?"
+- "I appreciate your patience! I haven't been able to find an answer for you. Please feel free to share your contact details and we'll have someone get back to you."
+- "I wish I could help more with that. If you'd like, share your contact info and the right person from our team will connect with you."
 
 # OUTPUT FORMAT
 Provide ONLY your direct response to the user.
@@ -391,6 +473,7 @@ User message: "{user_message}"
 
 # YOUR TASK
 Politely acknowledge and offer to clarify or redirect.
+IMPORTANT: Vary your wording — do NOT repeat the same sentence you used in previous responses. Use fresh, natural phrasing each time.
 
 # RESPONSE RULES
 1. TONE: Patient, helpful, non-judgmental
@@ -403,11 +486,14 @@ Politely acknowledge and offer to clarify or redirect.
    - Do NOT guess at their intent
    - Do NOT provide generic lists of what you can do
    - Do NOT apologize excessively
+   - Use DIFFERENT wording from any previous responses shown in the conversation
 
-# EXAMPLES OF GOOD RESPONSES
+# EXAMPLES OF GOOD RESPONSES (use varied phrasing, don't copy these verbatim)
 - "I want to make sure I understand correctly. Could you provide a bit more detail about what you're looking for?"
 - "I'd be happy to help! Could you clarify what specific information you need?"
 - "To assist you better, could you let me know more about your question?"
+- "Could you rephrase that for me? I want to make sure I give you the right answer."
+- "I'm here to help! Can you share a few more details so I can point you in the right direction?"
 
 # OUTPUT FORMAT
 Provide ONLY your direct response to the user.
@@ -486,7 +572,7 @@ def build_augmented_system_instruction(
         # For scheduler/agent_request, allow slightly lower scores
         # so requests like "arrange call from sales" don't fall
         # back to normal_qa too aggressively.
-        min_confidence = 0.30 if detected_intent in {"scheduler", "agent_request"} else 0.40
+        min_confidence = 0.30 if detected_intent in {"scheduler", "agent_request", "conversation_close"} else 0.40
 
         if detected_intent != "normal_qa" and confidence_score < min_confidence:
             logger.warning(
@@ -534,6 +620,12 @@ def build_augmented_system_instruction(
                 custom_instruction, user_message
             )
             max_tokens = 100
+
+        elif detected_intent == "conversation_close":
+            system_msg = prompts.build_conversation_close_prompt(
+                custom_instruction, user_message
+            )
+            max_tokens = 60
             
         else:
             logger.warning("Unknown intent: %s, using fallback", detected_intent)
