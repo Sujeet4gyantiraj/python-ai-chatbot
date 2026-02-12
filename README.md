@@ -73,3 +73,4 @@ This project is a production-ready AI microservice for building SaaS-based chatb
 
 482 + 241 + 510 + 840 = 2073
 
+pm2 start "uvicorn app.main:app --host 0.0.0.0 --port 7004" --name ai-service-new

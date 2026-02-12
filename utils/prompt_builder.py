@@ -58,6 +58,18 @@ class ChatbotPrompts:
 
         history_block = "\n".join(history_lines) if history_lines else "No prior conversation history."
 
+        abusive_user_protocol_content = """
+# ABUSIVE USER PROTOCOL
+• If the user is rude or abusive, do not argue or mirror their tone.
+• Stay respectful and focus on solving their problem.
+• Acknowledge frustration with empathy (e.g., “I understand this is frustrating”).
+• Gently guide the conversation back to the issue and offer help.
+• If abuse continues, set a polite boundary: “I want to help, but let’s keep the conversation respectful.”
+• Never shame, threaten, or escalate.
+• Keep responses clear, calm, and solution-focused.
+"""
+        abusive_protocol_section = abusive_user_protocol_content if not knowledge_base.strip() else ""
+
         template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
 # ROLE AND PERSONALITY
@@ -74,6 +86,7 @@ Provide accurate answers to customer questions using ONLY the knowledge base pro
 
 {knowledge_base}
 
+{abusive_protocol_section}
 
 # RESPONSE RULES
 0. TENANT CONTEXT: If your role description above includes a tenant name or tenant description, assume all questions refer specifically to that tenant's products, services, and policies. Keep tone, wording, and examples aligned with that tenant.
@@ -107,8 +120,6 @@ If the knowledge base contains NO relevant information to answer the question:
   • "Unfortunately, that's outside the information I currently have access to."
   • "Thanks for asking! I'm not able to find an answer to that right now."
   • "That's a great question. However, I don't have the details for that at this time."
-- Do NOT vary your wording. Always use the fixed message above for all such cases.
-- Pick a phrasing that feels natural and different from your previous replies in the conversation history.
 - WARNING: If you generate any other response, it will be rejected and replaced by the system.
 If there is any relevant information in the knowledge base, you MUST answer using that information and MUST NOT use the fallback message.
 
@@ -138,6 +149,7 @@ If the user is making a statement about themselves (e.g., "I am a software devel
                 knowledge_base=knowledge_base or "No knowledge base provided.",
                 history_block=history_block,
                 question=question,
+                abusive_protocol_section=abusive_protocol_section,
             )
         }
 
@@ -395,6 +407,65 @@ Provide ONLY your direct response to the user. No preamble, no explanation.
         }
 
     @staticmethod
+    def build_abusive_prompt(
+        custom_instruction: Optional[str] = None,
+        user_message: Optional[str] = None
+    ) -> Dict[str, str]:
+        """Prompt for when the user is abusive."""
+
+        personality = custom_instruction or (
+            "You are a calm, professional, and non-confrontational customer support assistant."
+        )
+
+        template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+# ROLE AND PERSONALITY
+{personality}
+
+# SITUATION
+The user is being rude or abusive.
+
+User message: "{user_message}"
+
+# YOUR TASK
+- Do not argue or mirror their tone.
+- Stay respectful and focus on solving their problem.
+- Acknowledge frustration with empathy (e.g., “I understand this is frustrating”).
+- Gently guide the conversation back to the issue and offer help.
+- If abuse continues, set a polite boundary: “I want to help, but let’s keep the conversation respectful.”
+- Never shame, threaten, or escalate.
+- Keep responses clear, calm, and solution-focused.
+
+# RESPONSE RULES
+1. LENGTH: 1-3 short sentences.
+2. TONE: Calm, patient, and professional.
+3. CONSTRAINTS:
+   - Do NOT engage in the abusive behavior.
+   - Do NOT get defensive.
+   - Do NOT make personal comments.
+
+# EXAMPLES OF GOOD RESPONSES
+- "I understand your frustration. I'm here to help you with your issue. Could you please provide me with more details about what you're trying to do?"
+- "I hear that you're upset. I want to help resolve this for you. Let's focus on the problem you're experiencing."
+- "I want to help, but let’s keep the conversation respectful. I'm ready to assist you with your problem."
+
+# OUTPUT FORMAT
+Provide ONLY your direct response to the user. No preamble, no explanation.
+
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{user_message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+"""
+        return {
+            "role": "system",
+            "content": template.format(
+                personality=personality,
+                user_message=user_message or ""
+            )
+        }
+
+    @staticmethod
     def build_fallback_prompt(
         custom_instruction: Optional[str] = None,
         user_message: Optional[str] = None
@@ -626,6 +697,12 @@ def build_augmented_system_instruction(
                 custom_instruction, user_message
             )
             max_tokens = 60
+
+        elif detected_intent == "abusive":
+            system_msg = prompts.build_abusive_prompt(
+                custom_instruction, user_message
+            )
+            max_tokens = 80
             
         else:
             logger.warning("Unknown intent: %s, using fallback", detected_intent)

@@ -180,6 +180,27 @@ class SemanticRouteClassifier:
                                  'i dont need', 'i dont want', 'no more questions']
             ),
 
+            'abusive': Route(
+                name='abusive',
+                examples=[
+                    'fuck you', 'you are an idiot', 'this is bullshit',
+                    'what the hell', 'piss off', 'you are useless',
+                    'go to hell', 'damn it', 'you suck', 'asshole',
+                    'you are a moron', 'stupid bot', 'this is garbage',
+                    'kill yourself', 'i hate you', 'you are worthless'
+                ],
+                patterns=[
+                    r'\b(fuck|shit|bitch|cunt|asshole|bastard|douchebag)\b',
+                    r'\b(idiot|stupid|dumb|useless|moron|garbage)\b',
+                    r'\b(hell|damn)\b',
+                    r'\b(piss\s*off)\b',
+                    r'\b(kill\s*yourself)\b',
+                    r'\b(i\s*hate\s*you)\b'
+                ],
+                keywords=['fuck', 'shit', 'bitch', 'cunt', 'asshole', 'bastard', 'idiot', 'stupid', 'dumb', 'useless', 'hell', 'damn', 'piss off', 'suck', 'moron', 'garbage', 'kill', 'hate', 'worthless', 'douchebag'],
+                phrase_patterns=['fuck you', 'what the hell', 'piss off', 'go to hell', 'you suck', 'you are an idiot', 'this is bullshit', 'you are useless', 'kill yourself', 'i hate you']
+            ),
+
             'normal_qa': Route(
                 name='normal_qa',
                 examples=[
@@ -297,6 +318,10 @@ class SemanticRouteClassifier:
         if not patterns:
             return 0.0
         
+        if route_name == 'abusive':
+            if any(pattern.search(text) for pattern in patterns):
+                return 1.0
+
         # For agent_request, add context check
         if route_name == 'agent_request':
             text_words = set(self._tokenize(text))
@@ -318,6 +343,10 @@ class SemanticRouteClassifier:
             return 0.0
         
         text_lower = text.lower()
+        
+        if route.name == 'abusive':
+            if any(keyword.lower() in text_words or keyword.lower() in text_lower for keyword in route.keywords):
+                return 1.0
         
         if route.name == 'agent_request':
             agent_keywords = {'agent', 'human', 'representative', 'operator'}
@@ -347,6 +376,11 @@ class SemanticRouteClassifier:
             return 0.0
         
         text_lower = text.lower()
+        
+        if route.name == 'abusive':
+            if any(phrase in text_lower for phrase in route.phrase_patterns):
+                return 1.0
+        
         matches = sum(1 for phrase in route.phrase_patterns if phrase in text_lower)
         
         return matches / len(route.phrase_patterns)
@@ -620,6 +654,20 @@ class BERTIntentClassifier:
                     'no more questions', 'no i am ok',
                     'not interested', 'not right now', 'maybe later',
                     'stop', 'end', 'close', 'exit',
+                ],
+                patterns=[], keywords=[], phrase_patterns=[]
+            ),
+
+            'abusive': Route(
+                name='abusive',
+                examples=[
+                    'fuck you', 'you are an idiot', 'this is bullshit',
+                    'what the hell', 'piss off', 'you are useless',
+                    'go to hell', 'damn it', 'you suck', 'asshole',
+                    'you are a moron', 'stupid bot', 'this is garbage',
+                    'kill yourself', 'i hate you', 'you are worthless',
+                    'go fuck yourself', 'eat shit', 'you are a joke',
+                    'this is a waste of time', 'i will kill you'
                 ],
                 patterns=[], keywords=[], phrase_patterns=[]
             ),
